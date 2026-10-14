@@ -1,12 +1,12 @@
 # ClickUp board
 
-A [Mission Control](https://github.com/LynchzDEV/mission-control) plugin. See a ClickUp board and start a chat or terminal on any task, with the task already explained to the AI.
+A [Shikidan](https://github.com/LynchzDEV/mission-control) plugin. See a ClickUp board and start a chat or terminal on any task, with the task already explained to the AI.
 
 ## Install
 
-In Mission Control: sidebar, Marketplace, add `https://github.com/LynchzDEV/mc-marketplace`, then install **ClickUp board**.
+In Shikidan: sidebar, Marketplace, add `https://github.com/LynchzDEV/mc-marketplace`, then install **ClickUp board**.
 
-It runs **isolated**. It can reach `api.clickup.com` and nothing else, start chats and terminals only when you click Start on a task, and keep its own settings. It cannot read your files or Mission Control's other secrets.
+It runs **isolated**. It can reach `api.clickup.com` and nothing else, start chats and terminals only when you click Start on a task, and keep its own settings. It cannot read your files or Shikidan's other secrets.
 
 ## Use
 
@@ -29,4 +29,4 @@ bun install
 bun test
 ```
 
-Server methods are in `src/server.ts`, the screen in `src/screen.ts`. Built with [mc-plugin-sdk](https://github.com/LynchzDEV/mc-plugin-sdk).
+Server methods are in `src/server.ts`, the screen in `src/screen.ts`. Built with [skd-plugin-sdk](https://github.com/LynchzDEV/mc-plugin-sdk).
