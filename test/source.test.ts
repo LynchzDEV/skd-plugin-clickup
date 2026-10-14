@@ -26,7 +26,7 @@ function setup(respond: Responder) {
 describe('askText', () => {
   test('askText numbers the questions in Thai and ends with the marker', () => {
     expect(askText(['หน้าไหนครับ', 'Thai or English?'])).toBe(
-      'ขอถามเพิ่มเติมก่อนเริ่มงานนี้นิดนึงครับ\n\n1. หน้าไหนครับ\n2. Thai or English?\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ\n— Mission Control',
+      'ขอถามเพิ่มเติมก่อนเริ่มงานนี้นิดนึงครับ\n\n1. หน้าไหนครับ\n2. Thai or English?\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ\n— Shikidan',
     )
   })
 })
@@ -132,7 +132,7 @@ function repliesSetup(top: unknown[], threads: Record<string, unknown[]> = {}, i
     if (thread) return { body: { comments: threads[thread[1]!] ?? [] } }
     return { status: 404, body: {} }
   })
-  const data = mkdtempSync(join(tmpdir(), 'mc-plugin-clickup-replies-'))
+  const data = mkdtempSync(join(tmpdir(), 'skd-plugin-clickup-replies-'))
   dataDirs.push(data)
   const images = fakeImages(image)
   const logs: string[] = []
@@ -150,7 +150,7 @@ describe('sourceReplies', () => {
     expect(result.lastId).toBe('300')
   })
 
-  test('skips the Mission Control ask but still advances the cursor past it', async () => {
+  test('skips the plugin ask but still advances the cursor past it', async () => {
     const { clock, api, deadline, store } = repliesSetup([comment('4', 400, `${askText(['หน้าไหนครับ'])}\n`), comment('3', 300, 'answer')])
     const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: '100' }, deadline, store))
     expect(result.replies.map((reply) => reply.text)).toEqual(['answer'])
@@ -158,7 +158,7 @@ describe('sourceReplies', () => {
   })
 
   test('returns thread replies under any comment', async () => {
-    const { clock, api, deadline, store } = repliesSetup([comment('4', 400, 'q\n— Mission Control', { reply_count: 1 })], { '4': [comment('5', 500, 'หน้า login ครับ')] })
+    const { clock, api, deadline, store } = repliesSetup([comment('4', 400, 'q\n— Shikidan', { reply_count: 1 })], { '4': [comment('5', 500, 'หน้า login ครับ')] })
     const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: '400' }, deadline, store))
     expect(result.replies.map((reply) => reply.text)).toEqual(['หน้า login ครับ'])
     expect(result.lastId).toBe('500')
@@ -242,14 +242,21 @@ describe('sourceReplies own-ask detection', () => {
   })
 
   test('returns a comment that ends with the marker but lacks the ask header', async () => {
-    const signed = 'ok ทำได้เลย\n— Mission Control'
+    const signed = 'ok ทำได้เลย\n— Shikidan'
     const { clock, api, deadline, store } = repliesSetup([comment('7', 700, signed)])
     const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
     expect(result.replies.map((reply) => reply.text)).toEqual([signed])
   })
 
+  test('still skips an ask posted with the legacy Mission Control signature', async () => {
+    const legacyAsk = ask.replace('\n— Shikidan', '\n— Mission Control')
+    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, legacyAsk)])
+    const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
+    expect(result).toEqual({ replies: [], lastId: '700' })
+  })
+
   test('skips the ask even with blank lines and spaces around it', async () => {
-    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, `\n  ${ask.replace('\n— Mission Control', '\n  — Mission Control  ')}\n\n`)])
+    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, `\n  ${ask.replace('\n— Shikidan', '\n  — Shikidan  ')}\n\n`)])
     const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
     expect(result).toEqual({ replies: [], lastId: '700' })
   })

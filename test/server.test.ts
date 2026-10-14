@@ -18,7 +18,7 @@ function makeCtx(settings: Record<string, string> = {}) {
         else store.set(key, value)
       },
     },
-    data: mkdtempSync(join(tmpdir(), 'mc-plugin-clickup-')),
+    data: mkdtempSync(join(tmpdir(), 'skd-plugin-clickup-')),
     log: () => {},
   }
   return { ctx, store }

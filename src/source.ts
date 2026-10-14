@@ -3,7 +3,9 @@ import type { Clock, Deadline } from './deadline'
 import { buildDossier } from './dossier'
 import { downloadReplyImages, isAttachmentUrl, pruneReplyImages, MAX_IMAGES_PER_REPLY, MAX_IMAGES_PER_RESULT, type DownloadedImage, type ImageStore, type SavedImage } from './reply-images'
 
-export const MC_MARKER = '— Mission Control'
+export const ASK_SIGNATURE = '— Shikidan'
+// ponytail: legacy signature on asks posted before Shikidan, drop once no open task still carries one
+const LEGACY_ASK_SIGNATURE = '— Mission Control'
 export const ASK_HEADER = 'ขอถามเพิ่มเติมก่อนเริ่มงานนี้นิดนึงครับ'
 const TASK_ID = /^[A-Za-z0-9_-]{1,40}$/
 const MAX_TITLE = 500
@@ -26,7 +28,7 @@ function taskId(id: unknown): string {
 
 export function askText(lines: string[]): string {
   const numbered = lines.map((line, index) => `${index + 1}. ${line}`).join('\n')
-  return `${ASK_HEADER}\n\n${numbered}\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ\n${MC_MARKER}`
+  return `${ASK_HEADER}\n\n${numbered}\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ\n${ASK_SIGNATURE}`
 }
 
 export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, clock: Clock): Promise<{ title: string; url: string; contextMarkdown: string }> {
@@ -62,7 +64,8 @@ function imageLinks(parts: unknown): string[] {
 
 export function isOwnAsk(text: string): boolean {
   const lines = text.split('\n').map((line) => line.trim()).filter((line) => line !== '')
-  return lines[0] === ASK_HEADER && lines.at(-1) === MC_MARKER
+  const signature = lines.at(-1)
+  return lines[0] === ASK_HEADER && (signature === ASK_SIGNATURE || signature === LEGACY_ASK_SIGNATURE)
 }
 
 function toReply(raw: RawComment, links: string[], downloaded: DownloadedImage[]): SourceReply {
