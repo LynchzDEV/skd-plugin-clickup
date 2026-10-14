@@ -1,5 +1,5 @@
-import { defineScreen } from '@mission-control/plugin-sdk/screen'
-import type { ScreenApi, SessionRequest } from '@mission-control/plugin-sdk'
+import { defineScreen } from '@shikidan/plugin-sdk/screen'
+import type { ScreenApi, SessionRequest } from '@shikidan/plugin-sdk'
 import type { Board, BoardSource, Card, Column } from './board'
 import type { TreeChild, TreeNode } from './tree'
 import { esc, renderBoardBar, renderColumns, renderEmpty, renderError, renderSprite } from './view'

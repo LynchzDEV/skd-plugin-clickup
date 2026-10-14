@@ -1,5 +1,5 @@
-import { definePlugin } from '@mission-control/plugin-sdk/server'
-import type { ServerContext } from '@mission-control/plugin-sdk'
+import { definePlugin } from '@shikidan/plugin-sdk/server'
+import type { ServerContext } from '@shikidan/plugin-sdk'
 import { createClickUp, type ClickUp } from './clickup-api'
 import { createDeadline, realClock, type Clock, type Deadline } from './deadline'
 import { fetchListDetail, listPath, loadBoard, type Board, type BoardSource } from './board'

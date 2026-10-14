@@ -5,7 +5,7 @@
     "": {
       "name": "mc-plugin-clickup",
       "dependencies": {
-        "@mission-control/plugin-sdk": "github:LynchzDEV/mc-plugin-sdk#v0.1.1",
+        "@shikidan/plugin-sdk": "github:LynchzDEV/skd-plugin-sdk#v0.3.0",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "^20.14.5",
@@ -15,7 +15,7 @@
   "packages": {
     "@happy-dom/global-registrator": ["@happy-dom/global-registrator@20.14.5", "", { "dependencies": { "@types/node": ">=20.0.0", "happy-dom": "^20.14.5" } }, "sha512-B05ID9DhSwLs6mlm1fzlkAtTIvB3duCvjJjfr19LBrlTK7VZtRjDqoTRIVv13GuYuNdhByu8LSZgThwV3Rkj7g=="],
 
-    "@mission-control/plugin-sdk": ["@mission-control/plugin-sdk@github:LynchzDEV/mc-plugin-sdk#9311bb0", { "dependencies": { "comlink": "^4.4.2", "vscode-jsonrpc": "^9.0.3", "zod": "4" } }, "LynchzDEV-mc-plugin-sdk-9311bb0", "sha512-Q9EsfXHBC3jsrENVR9274xychlVwIYI7pJCzddjVBSod0kca9IBCCFg24/Oy2bBz7A4Yq9jipvdvz0tf1WbyCg=="],
+    "@shikidan/plugin-sdk": ["@shikidan/plugin-sdk@github:LynchzDEV/skd-plugin-sdk#029ea80", { "dependencies": { "comlink": "^4.4.2", "vscode-jsonrpc": "^9.0.3", "zod": "4" } }, "LynchzDEV-skd-plugin-sdk-029ea80", "sha512-F/G9UEuhpzlDlnvi5pKMNrB5hcAuccksJAui8e8fJsG+vfZGtJl7uyFuDEanrexHPUpuMR79EPvjAS1PdX8xrQ=="],
 
     "@types/node": ["@types/node@26.6.4", "", { "dependencies": { "undici-types": "~8.9.0" } }, "sha512-ldVPDCzj7fsaGZrLB0NuHuTvJcsNasysBAqMolr/cgxrLd1xbqxIr3XJiPnHHJUCxj5sNF1vnRj9aWnrVh5Jcg=="],
 

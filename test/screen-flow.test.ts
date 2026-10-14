@@ -3,7 +3,7 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator'
 GlobalRegistrator.register()
 
 import { beforeEach, describe, expect, test } from 'bun:test'
-import type { ScreenApi, SessionRequest } from '@mission-control/plugin-sdk'
+import type { ScreenApi, SessionRequest } from '@shikidan/plugin-sdk'
 import definition from '../src/screen'
 import type { Board, BoardSource, Card, Column } from '../src/board'
 import type { TreeChild, TreeNode } from '../src/tree'
