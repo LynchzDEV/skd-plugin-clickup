@@ -73,7 +73,7 @@ async function resolveMention(api: ClickUp, listId: string, mention: string, dea
   const pools = [
     members.filter((member) => same(member.username)),
     members.filter((member) => same(member.email)),
-    members.filter((member) => lower !== '' && member.username?.toLowerCase().startsWith(lower)),
+    members.filter((member) => lower.length >= 3 && member.username?.toLowerCase().startsWith(lower)),
   ]
   const found = pools.find((pool) => pool.length > 0)
   if (found?.length !== 1 || found[0]!.id == null) throw new Error(`Could not find one ClickUp user for "${mention}"`)

@@ -201,6 +201,12 @@ describe('sourcePost update', () => {
     expect(fake.calls.find((call) => call.method === 'POST')!.body).toEqual({ comment_text: `@${mention}\nFixed it.\nCheck please\n— Shikidan` })
   })
 
+  test('a username prefix shorter than 3 characters is not used', async () => {
+    const { run, fake } = updateSetup()
+    expect(await run({ mention: 'ma' })).toEqual({ commentId: '1700000000000', warning: 'Mention not resolved: Could not find one ClickUp user for "ma"' })
+    expect(fake.calls.filter((call) => call.method === 'POST')).toHaveLength(1)
+  })
+
   test('a rejected rich comment falls back to the plain comment', async () => {
     const { run, fake } = updateSetup({ fail: ['POST /task/t1/comment#1'] })
     expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not resolved: ClickUp returned 500' })
