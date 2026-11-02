@@ -131,11 +131,15 @@ describe('sourcePost update', () => {
   ].map(({ user }) => user)
   const tagged = (userId: number) => [{ type: 'tag', user: { id: userId } }, { text: ' x' }]
 
-  type Plan = { keepTag?: boolean[]; statuses?: string[]; taskStatus?: string }
+  type Plan = { keepTag?: boolean[]; statuses?: string[]; taskStatus?: string; fail?: string[] }
   function updateSetup(plan: Plan = {}) {
     const keep = [...(plan.keepTag ?? [true])]
     const posted: Array<{ id: string; userId: number }> = []
+    const seen = new Map<string, number>()
     const base = setup(({ path, method, body }) => {
+      const key = `${method} ${path}`
+      seen.set(key, (seen.get(key) ?? 0) + 1)
+      if (plan.fail?.includes(`${key}#${seen.get(key)}`)) return { status: 500, body: {} }
       if (method === 'GET' && path === '/task/t1') return { body: { id: 't1', list: { id: 'L1' }, status: { status: plan.taskStatus ?? 'in progress' } } }
       if (method === 'GET' && path === '/list/L1/member') return { body: { members } }
       if (method === 'GET' && path === '/list/L1') return { body: { statuses: (plan.statuses ?? ['to do', 'In Progress']).map((status) => ({ status })) } }
@@ -202,11 +206,40 @@ describe('sourcePost update', () => {
     expect(methodsOf()).toEqual(['POST /task/t1/comment', 'GET /task/t1/comment', 'DELETE /comment/9000', 'POST /task/t1/comment', 'GET /task/t1/comment'])
   })
 
-  test('throws when the second attempt loses the mention too', async () => {
+  test('keeps the comment and warns when the second attempt loses the mention too', async () => {
     const { run, methodsOf } = updateSetup({ keepTag: [false, false] })
-    await expect(run({ mention: '42' })).rejects.toThrow('ClickUp did not keep the mention')
+    expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not kept' })
     expect(methodsOf().filter((call) => call.startsWith('POST'))).toHaveLength(2)
     expect(methodsOf().filter((call) => call.startsWith('DELETE'))).toEqual(['DELETE /comment/9000'])
+  })
+
+  describe('failures after the comment exists never throw', () => {
+    test('the read-back fails', async () => {
+      const { run, methodsOf } = updateSetup({ fail: ['GET /task/t1/comment#1'] })
+      expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not verified: ClickUp returned 500' })
+      expect(methodsOf().filter((call) => call.startsWith('POST'))).toHaveLength(1)
+    })
+
+    test('deleting the first lost comment fails', async () => {
+      const { run, methodsOf } = updateSetup({ keepTag: [false, true], fail: ['DELETE /comment/9000#1'] })
+      expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not kept: ClickUp returned 500' })
+      expect(methodsOf().filter((call) => call.startsWith('POST'))).toHaveLength(1)
+    })
+
+    test('setting the status fails', async () => {
+      const { run } = updateSetup({ fail: ['PUT /task/t1#1'] })
+      expect(await run({ status: 'in progress' })).toEqual({ commentId: '1700000000000', warning: 'Status not set: ClickUp returned 500' })
+    })
+
+    test('confirming the status fails', async () => {
+      const { run } = updateSetup({ fail: ['GET /task/t1#2'] })
+      expect(await run({ status: 'in progress' })).toEqual({ commentId: '1700000000000', warning: 'Status not confirmed: ClickUp returned 500' })
+    })
+
+    test('a mention warning and a status warning are reported together', async () => {
+      const { run } = updateSetup({ keepTag: [false, false], fail: ['PUT /task/t1#1'] })
+      expect(await run({ mention: '42', status: 'in progress' })).toEqual({ commentId: '1700000000000', warning: 'Mention not kept; Status not set: ClickUp returned 500' })
+    })
   })
 
   test('sets the status after posting and returns the status ClickUp reports', async () => {

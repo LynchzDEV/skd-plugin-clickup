@@ -42,7 +42,7 @@ export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, c
 type AskInput = { id: string; kind: 'ask'; lines: string[] }
 type UpdateInput = { id: string; kind: 'update'; lines: string[]; mention?: string; status?: string }
 export type PostInput = AskInput | UpdateInput
-export type PostResult = { commentId: string; status?: string }
+export type PostResult = { commentId: string; status?: string; warning?: string }
 
 const cleanLines = (lines: unknown): string[] =>
   (Array.isArray(lines) ? lines : []).filter((line): line is string => typeof line === 'string' && line.trim() !== '')
@@ -94,15 +94,44 @@ async function keepsMention(api: ClickUp, task: string, commentId: string, userI
   return (posted.comment as CommentPart[]).some((part) => part?.type === 'tag' && String(part.user?.id) === userId)
 }
 
-async function postWithMention(api: ClickUp, task: string, userId: string, text: string, deadline: Deadline): Promise<Created> {
+type Posted = { created: Created; warning?: string }
+
+const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
+
+async function postWithMention(api: ClickUp, task: string, userId: string, text: string, deadline: Deadline): Promise<Posted> {
   const comment = [{ type: 'tag', user: { id: Number(userId) } }, { text: ` ${text}` }]
+  let created: Created = {}
   for (const attempt of [1, 2]) {
-    const created = (await api.post(`/task/${task}/comment`, { comment }, deadline)) as Created
-    if (created.id == null) throw new Error('ClickUp did not return the new comment')
-    if (await keepsMention(api, task, String(created.id), userId, deadline)) return created
-    if (attempt === 1) await api.delete(`/comment/${encodeURIComponent(String(created.id))}`, deadline)
+    created = (await api.post(`/task/${task}/comment`, { comment }, deadline)) as Created
+    if (created.id == null) return { created, warning: 'Mention not verified: ClickUp did not return the new comment' }
+    try {
+      if (await keepsMention(api, task, String(created.id), userId, deadline)) return { created }
+    } catch (error) {
+      return { created, warning: `Mention not verified: ${reasonOf(error)}` }
+    }
+    if (attempt === 1) {
+      try {
+        await api.delete(`/comment/${encodeURIComponent(String(created.id))}`, deadline)
+      } catch (error) {
+        return { created, warning: `Mention not kept: ${reasonOf(error)}` }
+      }
+    }
   }
-  throw new Error('ClickUp did not keep the mention')
+  return { created, warning: 'Mention not kept' }
+}
+
+async function applyStatus(api: ClickUp, task: string, status: string, deadline: Deadline): Promise<{ status?: string; warning?: string }> {
+  try {
+    await api.put(`/task/${task}`, { status }, deadline)
+  } catch (error) {
+    return { warning: `Status not set: ${reasonOf(error)}` }
+  }
+  try {
+    const after = (await api.get(`/task/${task}`, deadline)) as { status?: { status?: string } }
+    return after.status?.status ? { status: after.status.status } : { warning: 'Status not confirmed' }
+  } catch (error) {
+    return { warning: `Status not confirmed: ${reasonOf(error)}` }
+  }
 }
 
 async function postUpdate(api: ClickUp, task: string, input: Omit<UpdateInput, 'id'>, deadline: Deadline, now: number): Promise<PostResult> {
@@ -115,13 +144,12 @@ async function postUpdate(api: ClickUp, task: string, input: Omit<UpdateInput, '
   const status = wantedStatus === undefined ? undefined : await assertStatusExists(api, listId, wantedStatus.trim(), deadline)
   const userId = mention === undefined ? undefined : await resolveMention(api, listId, mention, deadline)
   const text = updateText(input.lines)
-  const created = userId === undefined
-    ? ((await api.post(`/task/${task}/comment`, { comment_text: text }, deadline)) as Created)
+  const { created, warning: mentionWarning } = userId === undefined
+    ? { created: (await api.post(`/task/${task}/comment`, { comment_text: text }, deadline)) as Created, warning: undefined }
     : await postWithMention(api, task, userId, text, deadline)
-  if (status === undefined) return { commentId: cursorOf(created, now) }
-  await api.put(`/task/${task}`, { status }, deadline)
-  const after = (await api.get(`/task/${task}`, deadline)) as { status?: { status?: string } }
-  return { commentId: cursorOf(created, now), status: after.status?.status }
+  const applied = status === undefined ? {} : await applyStatus(api, task, status, deadline)
+  const warning = [mentionWarning, applied.warning].filter((item) => item !== undefined).join('; ')
+  return { commentId: cursorOf(created, now), ...(applied.status === undefined ? {} : { status: applied.status }), ...(warning === '' ? {} : { warning }) }
 }
 
 type RawComment = { id?: string | number; date?: string | number; comment_text?: string; user?: { username?: string }; reply_count?: number | string; comment?: unknown }
