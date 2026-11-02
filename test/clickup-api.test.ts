@@ -336,3 +336,28 @@ describe('post', () => {
     if (!failure.ok) expect(failure.error).toBeInstanceOf(TokenRejected)
   })
 })
+
+describe('put and delete', () => {
+  test('put sends a JSON body with the PUT method', async () => {
+    const { api, fake, clock } = makeApi(({ method, path }) => (method === 'PUT' && path === '/task/t1' ? { body: { id: 't1' } } : { status: 404 }), 'pk_put')
+    const deadline = createDeadline(25000, clock)
+    expect(await settle(clock, api.put('/task/t1', { status: 'done' }, deadline))).toEqual({ id: 't1' })
+    expect(fake.calls[0].body).toEqual({ status: 'done' })
+  })
+
+  test('delete sends DELETE without a body', async () => {
+    const { api, fake, clock } = makeApi(({ method, path }) => (method === 'DELETE' && path === '/comment/9' ? { body: {} } : { status: 404 }), 'pk_delete')
+    const deadline = createDeadline(25000, clock)
+    await settle(clock, api.delete('/comment/9', deadline))
+    expect(fake.calls[0].method).toBe('DELETE')
+    expect(fake.calls[0].body).toBeUndefined()
+  })
+
+  test('put and delete share the 429 handling', async () => {
+    const { api, clock } = makeApi(() => ({ status: 429, headers: { 'retry-after': '30' } }), 'pk_put_429')
+    const deadline = createDeadline(25000, clock)
+    const failure = await outcome(settle(clock, api.delete('/comment/9', deadline)))
+    expect(failure.ok).toBe(false)
+    if (!failure.ok) expect(failure.error).toBeInstanceOf(RateLimited)
+  })
+})

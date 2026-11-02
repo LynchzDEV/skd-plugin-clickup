@@ -39,6 +39,8 @@ export type RequestGuard = () => void
 export interface ClickUp {
   get(path: string, deadline: Deadline, guard?: RequestGuard): Promise<unknown>
   post(path: string, body: unknown, deadline: Deadline): Promise<unknown>
+  put(path: string, body: unknown, deadline: Deadline): Promise<unknown>
+  delete(path: string, deadline: Deadline): Promise<unknown>
 }
 
 type Waiter = { proceed: () => void; stop: () => void }
@@ -153,14 +155,17 @@ export function createClickUp(token: string, deps: ClickUpDeps = {}): ClickUp {
   }
 
   const get = (path: string, deadline: Deadline, guard?: RequestGuard) => send(path, deadline, guard, {})
-  const post = (path: string, body: unknown, deadline: Deadline) =>
+  const withBody = (method: string) => (path: string, body: unknown, deadline: Deadline) =>
     send(path, deadline, undefined, {
-      method: 'POST',
+      method,
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     })
+  const post = withBody('POST')
+  const put = withBody('PUT')
+  const del = (path: string, deadline: Deadline) => send(path, deadline, undefined, { method: 'DELETE' })
 
-  return { get, post }
+  return { get, post, put, delete: del }
 }
 
 function parseRetryAfter(header: string | null): number | null {
