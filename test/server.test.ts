@@ -462,6 +462,13 @@ describe('source methods', () => {
     expect(await call(clock, methods['source.post']({ id: 't1', kind: 'ask', lines: ['Which page?'] }, ctx))).toEqual({ commentId: '1700' })
   })
 
+  test('source.post sends an update and returns the comment cursor', async () => {
+    const { methods, ctx, clock } = tokened(({ path, method }) =>
+      method === 'POST' && path === '/task/t1/comment' ? { body: { id: 'c', date: 1700 } } : { status: 404, body: {} },
+    )
+    expect(await call(clock, methods['source.post']({ id: 't1', kind: 'update', lines: ['Done.'] }, ctx))).toEqual({ commentId: '1700' })
+  })
+
   test('source.item and source.replies go through to ClickUp', async () => {
     const { methods, ctx, clock } = tokened(({ path }) => {
       if (path === '/task/t1') return { body: { id: 't1', name: 'Login copy' } }

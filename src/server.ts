@@ -8,7 +8,7 @@ import { buildDossier } from './dossier'
 import { treeChildren, type TreeNode } from './tree'
 import { parseClickUpLink } from './links'
 import { applyFilters, emptyGroup, matchesSearch, sanitizeGroup } from './filters'
-import { sourceItem, sourcePost, sourceReplies } from './source'
+import { sourceItem, sourcePost, sourceReplies, type PostInput } from './source'
 
 const METHOD_TIMEOUT_MS = 25000
 const BOARD_ID_PATTERN = /^b-[0-9a-f]{8}$/
@@ -184,7 +184,7 @@ export function createMethods(deps: PluginDeps = {}) {
     'source.item': async (params: { id: string }, ctx: ServerContext) =>
       withClickUp(ctx, (api, deadline) => sourceItem(api, params.id, deadline, clock)),
 
-    'source.post': async (params: { id: string; kind: 'ask'; lines: string[] }, ctx: ServerContext) =>
+    'source.post': async (params: PostInput, ctx: ServerContext) =>
       withClickUp(ctx, (api, deadline) => sourcePost(api, params, deadline, clock.now())),
 
     'source.replies': async (params: { id: string; sinceId: string | null }, ctx: ServerContext) =>

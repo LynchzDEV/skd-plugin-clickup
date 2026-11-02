@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { createClickUp } from '../src/clickup-api'
 import { createDeadline } from '../src/deadline'
 import { REPLY_IMAGE_TTL_MS } from '../src/reply-images'
-import { askText, isTaskId, sourceItem, sourcePost, sourceReplies } from '../src/source'
+import { askText, isTaskId, sourceItem, sourcePost, sourceReplies, updateText } from '../src/source'
 import { drain, fakeClock, settle, type FakeClock } from './helpers/fake-clock'
 import { fakeClickUp, type Responder } from './helpers/fake-clickup'
 import { fakeImages, type ImageReply } from './helpers/fake-images'
@@ -120,6 +120,106 @@ describe('sourcePost', () => {
     await expect(sourcePost(api, { id: 't1', kind: 'ask', lines: [] }, deadline, 1)).rejects.toThrow('Nothing to ask')
     await expect(sourcePost(api, { id: '../x', kind: 'ask', lines: ['q'] }, deadline, 1)).rejects.toThrow('Not a ClickUp task id')
     expect(fake.calls).toHaveLength(0)
+  })
+})
+
+describe('sourcePost update', () => {
+  const members = [
+    { user: { id: 11, username: 'Ploy Sri', email: 'ploy@x.co' } },
+    { user: { id: 12, username: 'Plum', email: 'plum@x.co' } },
+    { user: { id: 13, username: 'Mac', email: 'mac@x.co' } },
+  ].map(({ user }) => user)
+  const tagged = (userId: number) => [{ type: 'tag', user: { id: userId } }, { text: ' x' }]
+
+  type Plan = { keepTag?: boolean[]; statuses?: string[]; taskStatus?: string }
+  function updateSetup(plan: Plan = {}) {
+    const keep = [...(plan.keepTag ?? [true])]
+    const posted: Array<{ id: string; userId: number }> = []
+    const base = setup(({ path, method, body }) => {
+      if (method === 'GET' && path === '/task/t1') return { body: { id: 't1', list: { id: 'L1' }, status: { status: plan.taskStatus ?? 'in progress' } } }
+      if (method === 'GET' && path === '/list/L1/member') return { body: { members } }
+      if (method === 'GET' && path === '/list/L1') return { body: { statuses: (plan.statuses ?? ['to do', 'In Progress']).map((status) => ({ status })) } }
+      if (method === 'POST' && path === '/task/t1/comment') {
+        const parts = (body as { comment?: Array<{ type?: string; user?: { id: number } }> }).comment
+        const id = String(9000 + posted.length)
+        if (parts) posted.push({ id, userId: parts[0]!.user!.id })
+        return { body: { id, date: 1700000000000 } }
+      }
+      if (method === 'GET' && path === '/task/t1/comment') {
+        const last = posted.at(-1)
+        const kept = keep[posted.length - 1] ?? true
+        return { body: { comments: last ? [{ id: last.id, comment: kept ? tagged(last.userId) : [{ text: '@x' }] }] : [] } }
+      }
+      if (method === 'DELETE' || method === 'PUT') return { body: {} }
+      return { status: 404, body: {} }
+    })
+    const run = (input: { mention?: string; status?: string; lines?: string[] }) => settle(base.clock, sourcePost(base.api, { id: 't1', kind: 'update', lines: ['Fixed it.', 'Check please'], ...input }, base.deadline, 1234))
+    const methodsOf = () => base.fake.calls.map((call) => `${call.method} ${call.path}`)
+    return { ...base, run, methodsOf }
+  }
+
+  test('posts a plain comment ending with the marker and nothing else', async () => {
+    const { run, fake } = updateSetup()
+    expect(await run({})).toEqual({ commentId: '1700000000000' })
+    expect(fake.calls).toHaveLength(1)
+    expect(fake.calls[0].body).toEqual({ comment_text: 'Fixed it.\nCheck please\n— Shikidan' })
+  })
+
+  test('refuses empty lines and a bad id without calling ClickUp', async () => {
+    const { api, deadline, fake } = setup(() => ({ body: {} }))
+    await expect(sourcePost(api, { id: 't1', kind: 'update', lines: ['  '] }, deadline, 1)).rejects.toThrow('Nothing to post')
+    await expect(sourcePost(api, { id: '../x', kind: 'update', lines: ['a'] }, deadline, 1)).rejects.toThrow('Not a ClickUp task id')
+    expect(fake.calls).toHaveLength(0)
+  })
+
+  test('a numeric mention becomes a tag item then a text item with a leading space and the marker', async () => {
+    const { run, fake, methodsOf } = updateSetup()
+    expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000' })
+    expect(fake.calls[0].body).toEqual({ comment: [{ type: 'tag', user: { id: 42 } }, { text: ' Fixed it.\nCheck please\n— Shikidan' }] })
+    expect(methodsOf()).toEqual(['POST /task/t1/comment', 'GET /task/t1/comment'])
+  })
+
+  test.each([
+    ['username, any case', 'pLuM', 12],
+    ['email', 'MAC@x.co', 13],
+    ['unique username prefix', 'plo', 11],
+  ])('resolves a mention by %s', async (_name, mention, id) => {
+    const { run, fake } = updateSetup()
+    await run({ mention })
+    const post = fake.calls.find((call) => call.method === 'POST')!
+    expect((post.body as { comment: Array<{ user?: { id: number } }> }).comment[0]!.user!.id).toBe(id)
+  })
+
+  test.each([['an ambiguous prefix', 'pl'], ['an unknown user', 'nobody']])('%s throws and posts nothing', async (_name, mention) => {
+    const { run, methodsOf } = updateSetup()
+    await expect(run({ mention })).rejects.toThrow(`Could not find one ClickUp user for "${mention}"`)
+    expect(methodsOf().filter((call) => call.startsWith('POST'))).toEqual([])
+  })
+
+  test('deletes a comment whose mention came out as text and posts once more', async () => {
+    const { run, methodsOf } = updateSetup({ keepTag: [false, true] })
+    await run({ mention: '42' })
+    expect(methodsOf()).toEqual(['POST /task/t1/comment', 'GET /task/t1/comment', 'DELETE /comment/9000', 'POST /task/t1/comment', 'GET /task/t1/comment'])
+  })
+
+  test('throws when the second attempt loses the mention too', async () => {
+    const { run, methodsOf } = updateSetup({ keepTag: [false, false] })
+    await expect(run({ mention: '42' })).rejects.toThrow('ClickUp did not keep the mention')
+    expect(methodsOf().filter((call) => call.startsWith('POST'))).toHaveLength(2)
+    expect(methodsOf().filter((call) => call.startsWith('DELETE'))).toEqual(['DELETE /comment/9000'])
+  })
+
+  test('sets the status after posting and returns the status ClickUp reports', async () => {
+    const { run, fake, methodsOf } = updateSetup({ taskStatus: 'In Progress' })
+    expect(await run({ status: 'in progress' })).toEqual({ commentId: '1700000000000', status: 'In Progress' })
+    expect(methodsOf()).toEqual(['GET /task/t1', 'GET /list/L1', 'POST /task/t1/comment', 'PUT /task/t1', 'GET /task/t1'])
+    expect(fake.calls.find((call) => call.method === 'PUT')!.body).toEqual({ status: 'In Progress' })
+  })
+
+  test('an unknown status throws before anything is posted', async () => {
+    const { run, methodsOf } = updateSetup()
+    await expect(run({ status: 'Shipped', mention: '42' })).rejects.toThrow('This list has no status "Shipped"')
+    expect(methodsOf().filter((call) => call !== 'GET /task/t1' && call !== 'GET /list/L1')).toEqual([])
   })
 })
 
@@ -241,11 +341,17 @@ describe('sourceReplies own-ask detection', () => {
     expect(result.replies.map((reply) => reply.text)).toEqual([quoted])
   })
 
-  test('returns a comment that ends with the marker but lacks the ask header', async () => {
-    const signed = 'ok ทำได้เลย\n— Shikidan'
-    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, signed)])
+  test('skips an update comment: it ends with the marker but has no ask header', async () => {
+    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, updateText(['Fixed the login copy.']))])
     const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
-    expect(result.replies.map((reply) => reply.text)).toEqual([signed])
+    expect(result).toEqual({ replies: [], lastId: '700' })
+  })
+
+  test('returns a comment that quotes the marker mid-text but does not end with it', async () => {
+    const quoted = '— Shikidan said X, ok ทำได้เลย'
+    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, quoted)])
+    const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
+    expect(result.replies.map((reply) => reply.text)).toEqual([quoted])
   })
 
   test('still skips an ask posted with the legacy Mission Control signature', async () => {

@@ -39,12 +39,89 @@ export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, c
   return { title: (body.name?.trim() || task).slice(0, MAX_TITLE), url, contextMarkdown: dossier.markdown.slice(0, MAX_CONTEXT) }
 }
 
-export async function sourcePost(api: ClickUp, input: { id: string; kind: 'ask'; lines: string[] }, deadline: Deadline, now: number): Promise<{ commentId: string }> {
+type AskInput = { id: string; kind: 'ask'; lines: string[] }
+type UpdateInput = { id: string; kind: 'update'; lines: string[]; mention?: string; status?: string }
+export type PostInput = AskInput | UpdateInput
+export type PostResult = { commentId: string; status?: string }
+
+const cleanLines = (lines: unknown): string[] =>
+  (Array.isArray(lines) ? lines : []).filter((line): line is string => typeof line === 'string' && line.trim() !== '')
+
+const cursorOf = (created: { date?: number | string | null }, now: number): string => (created.date == null ? String(now) : String(created.date))
+
+export async function sourcePost(api: ClickUp, input: PostInput, deadline: Deadline, now: number): Promise<PostResult> {
   const task = taskId(input.id)
-  const lines = (Array.isArray(input.lines) ? input.lines : []).filter((line): line is string => typeof line === 'string' && line.trim() !== '')
+  const lines = cleanLines(input.lines)
+  if (input.kind === 'update') return postUpdate(api, task, { ...input, lines }, deadline, now)
   if (lines.length === 0) throw new Error('Nothing to ask')
   const body = (await api.post(`/task/${task}/comment`, { comment_text: askText(lines), notify_all: true }, deadline)) as { date?: number | string }
-  return { commentId: body.date == null ? String(now) : String(body.date) }
+  return { commentId: cursorOf(body, now) }
+}
+
+export const updateText = (lines: string[]): string => `${lines.join('\n')}\n${ASK_SIGNATURE}`
+
+type Member = { id?: number | string; username?: string; email?: string }
+type Created = { id?: number | string; date?: number | string | null }
+type CommentPart = { type?: string; user?: { id?: number | string } }
+
+async function resolveMention(api: ClickUp, listId: string, mention: string, deadline: Deadline): Promise<string> {
+  const wanted = mention.trim()
+  if (/^\d+$/.test(wanted)) return wanted
+  const members = ((await api.get(`/list/${listId}/member`, deadline)) as { members?: Member[] }).members ?? []
+  const lower = wanted.toLowerCase()
+  const same = (value: string | undefined) => value?.toLowerCase() === lower
+  const pools = [
+    members.filter((member) => same(member.username)),
+    members.filter((member) => same(member.email)),
+    members.filter((member) => lower !== '' && member.username?.toLowerCase().startsWith(lower)),
+  ]
+  const found = pools.find((pool) => pool.length > 0)
+  if (found?.length !== 1 || found[0]!.id == null) throw new Error(`Could not find one ClickUp user for "${mention}"`)
+  return String(found[0]!.id)
+}
+
+async function assertStatusExists(api: ClickUp, listId: string, status: string, deadline: Deadline): Promise<string> {
+  const statuses = ((await api.get(`/list/${listId}`, deadline)) as { statuses?: Array<{ status?: string }> }).statuses ?? []
+  const match = statuses.find((candidate) => candidate.status?.toLowerCase() === status.toLowerCase())
+  if (!match?.status) throw new Error(`This list has no status "${status}"`)
+  return match.status
+}
+
+async function keepsMention(api: ClickUp, task: string, commentId: string, userId: string, deadline: Deadline): Promise<boolean> {
+  const comments = ((await api.get(`/task/${task}/comment`, deadline)) as { comments?: RawComment[] }).comments ?? []
+  const posted = comments.find((raw) => String(raw.id) === commentId)
+  if (!Array.isArray(posted?.comment)) return false
+  return (posted.comment as CommentPart[]).some((part) => part?.type === 'tag' && String(part.user?.id) === userId)
+}
+
+async function postWithMention(api: ClickUp, task: string, userId: string, text: string, deadline: Deadline): Promise<Created> {
+  const comment = [{ type: 'tag', user: { id: Number(userId) } }, { text: ` ${text}` }]
+  for (const attempt of [1, 2]) {
+    const created = (await api.post(`/task/${task}/comment`, { comment }, deadline)) as Created
+    if (created.id == null) throw new Error('ClickUp did not return the new comment')
+    if (await keepsMention(api, task, String(created.id), userId, deadline)) return created
+    if (attempt === 1) await api.delete(`/comment/${encodeURIComponent(String(created.id))}`, deadline)
+  }
+  throw new Error('ClickUp did not keep the mention')
+}
+
+async function postUpdate(api: ClickUp, task: string, input: Omit<UpdateInput, 'id'>, deadline: Deadline, now: number): Promise<PostResult> {
+  if (input.lines.length === 0) throw new Error('Nothing to post')
+  const mention = typeof input.mention === 'string' && input.mention.trim() !== '' ? input.mention : undefined
+  const wantedStatus = typeof input.status === 'string' && input.status.trim() !== '' ? input.status : undefined
+  const needsList = wantedStatus !== undefined || (mention !== undefined && !/^\d+$/.test(mention.trim()))
+  const listId = needsList ? String(((await api.get(`/task/${task}`, deadline)) as { list?: { id?: number | string } }).list?.id ?? '') : ''
+  if (needsList && listId === '') throw new Error('Could not read the list of this task')
+  const status = wantedStatus === undefined ? undefined : await assertStatusExists(api, listId, wantedStatus.trim(), deadline)
+  const userId = mention === undefined ? undefined : await resolveMention(api, listId, mention, deadline)
+  const text = updateText(input.lines)
+  const created = userId === undefined
+    ? ((await api.post(`/task/${task}/comment`, { comment_text: text }, deadline)) as Created)
+    : await postWithMention(api, task, userId, text, deadline)
+  if (status === undefined) return { commentId: cursorOf(created, now) }
+  await api.put(`/task/${task}`, { status }, deadline)
+  const after = (await api.get(`/task/${task}`, deadline)) as { status?: { status?: string } }
+  return { commentId: cursorOf(created, now), status: after.status?.status }
 }
 
 type RawComment = { id?: string | number; date?: string | number; comment_text?: string; user?: { username?: string }; reply_count?: number | string; comment?: unknown }
@@ -62,10 +139,9 @@ function imageLinks(parts: unknown): string[] {
   })
 }
 
-export function isOwnAsk(text: string): boolean {
-  const lines = text.split('\n').map((line) => line.trim()).filter((line) => line !== '')
-  const signature = lines.at(-1)
-  return lines[0] === ASK_HEADER && (signature === ASK_SIGNATURE || signature === LEGACY_ASK_SIGNATURE)
+export function isOwnComment(text: string): boolean {
+  const signature = text.split('\n').map((line) => line.trim()).filter((line) => line !== '').at(-1)
+  return signature === ASK_SIGNATURE || signature === LEGACY_ASK_SIGNATURE
 }
 
 function toReply(raw: RawComment, links: string[], downloaded: DownloadedImage[]): SourceReply {
@@ -107,7 +183,7 @@ export async function sourceReplies(api: ClickUp, input: { id: string; sinceId: 
   const all = [...top, ...threads.flat()]
   const newest = all.reduce((max, raw) => Math.max(max, dateOf(raw)), since)
   const fresh = all
-    .filter((raw) => dateOf(raw) > since && !isOwnAsk(raw.comment_text ?? ''))
+    .filter((raw) => dateOf(raw) > since && !isOwnComment(raw.comment_text ?? ''))
     .sort((a, b) => dateOf(a) - dateOf(b))
     .slice(-MAX_REPLIES)
   const replies = await Promise.all(
