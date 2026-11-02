@@ -14,7 +14,11 @@ It runs **isolated**. It can reach `api.clickup.com` and nothing else, start cha
 2. Add a board: browse Workspace → Space → Folder → List, or paste a list or board-view link. Give it a folder, the repo sessions should open in.
 3. Hover a task card and click **Start chat** or **Start terminal**. The launcher opens with the board's folder, and the AI first reads a dossier of the task: description, subtasks, comments and replies, linked tasks, custom fields and attachment links.
 
-The board refreshes when you open it or click Refresh. Nothing polls in the background, and nothing is ever written back to ClickUp.
+The board refreshes when you open it or click Refresh. Nothing polls in the background. The only things written to ClickUp are comments Shikidan's queue posts (below).
+
+## Queue source
+
+`source.post` posts the questions Shikidan asks (`kind: 'ask'`) and update comments (`kind: 'update'`). An update is the given lines plus the `— Shikidan` marker, which also keeps it out of replies. It can carry `mention` (a ClickUp user id, or an exact username, exact email or unique username prefix on the task's list) as a real @mention, and `status` (a status of the task's list), and returns `{ commentId, status }`.
 
 ## Limits
 
