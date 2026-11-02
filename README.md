@@ -18,7 +18,7 @@ The board refreshes when you open it or click Refresh. Nothing polls in the back
 
 ## Queue source
 
-`source.post` posts the questions Shikidan asks (`kind: 'ask'`) and update comments (`kind: 'update'`). An update is the given lines plus the `— Shikidan` marker, which also keeps it out of replies. It can carry `mention` (a ClickUp user id, or an exact username, exact email or unique username prefix on the task's list) as a real @mention, and `status` (a status of the task's list), and returns `{ commentId, status }`.
+`source.post` posts the questions Shikidan asks (`kind: 'ask'`) and update comments (`kind: 'update'`). An update is the given lines plus the `— Shikidan` marker, which also keeps it out of replies. It can carry `mention` (a ClickUp user id, or an exact username, exact email or unique username prefix on the task's list) as a real @mention (prefixes need 3+ characters), and `status` (a status of the task's list), and returns `{ commentId, status, warning }`. Once the comment exists the call never throws: a mention that cannot be resolved or kept becomes one plain `@name` comment, and anything that did not happen is described in `warning`.
 
 ## Limits
 
