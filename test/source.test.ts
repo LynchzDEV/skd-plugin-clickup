@@ -194,10 +194,24 @@ describe('sourcePost update', () => {
     expect((post.body as { comment: Array<{ user?: { id: number } }> }).comment[0]!.user!.id).toBe(id)
   })
 
-  test.each([['an ambiguous prefix', 'pl'], ['an unknown user', 'nobody']])('%s throws and posts nothing', async (_name, mention) => {
-    const { run, methodsOf } = updateSetup()
-    await expect(run({ mention })).rejects.toThrow(`Could not find one ClickUp user for "${mention}"`)
-    expect(methodsOf().filter((call) => call.startsWith('POST'))).toEqual([])
+  test.each([['an ambiguous prefix', 'pl'], ['an unknown user', 'nobody']])('%s falls back to one plain comment led by the name', async (_name, mention) => {
+    const { run, fake, methodsOf } = updateSetup()
+    expect(await run({ mention })).toEqual({ commentId: '1700000000000', warning: `Mention not resolved: Could not find one ClickUp user for "${mention}"` })
+    expect(methodsOf().filter((call) => call.startsWith('POST'))).toEqual(['POST /task/t1/comment'])
+    expect(fake.calls.find((call) => call.method === 'POST')!.body).toEqual({ comment_text: `@${mention}\nFixed it.\nCheck please\n— Shikidan` })
+  })
+
+  test('a rejected rich comment falls back to the plain comment', async () => {
+    const { run, fake } = updateSetup({ fail: ['POST /task/t1/comment#1'] })
+    expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not resolved: ClickUp returned 500' })
+    const posts = fake.calls.filter((call) => call.method === 'POST')
+    expect(posts).toHaveLength(2)
+    expect(posts[1]!.body).toEqual({ comment_text: '@42\nFixed it.\nCheck please\n— Shikidan' })
+  })
+
+  test('a failing member lookup falls back to the plain comment', async () => {
+    const { run } = updateSetup({ fail: ['GET /list/L1/member#1'] })
+    expect(await run({ mention: 'Plum' })).toEqual({ commentId: '1700000000000', warning: 'Mention not resolved: ClickUp returned 500' })
   })
 
   test('deletes a comment whose mention came out as text and posts once more', async () => {
@@ -206,11 +220,17 @@ describe('sourcePost update', () => {
     expect(methodsOf()).toEqual(['POST /task/t1/comment', 'GET /task/t1/comment', 'DELETE /comment/9000', 'POST /task/t1/comment', 'GET /task/t1/comment'])
   })
 
-  test('keeps the comment and warns when the second attempt loses the mention too', async () => {
-    const { run, methodsOf } = updateSetup({ keepTag: [false, false] })
-    expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not kept' })
-    expect(methodsOf().filter((call) => call.startsWith('POST'))).toHaveLength(2)
-    expect(methodsOf().filter((call) => call.startsWith('DELETE'))).toEqual(['DELETE /comment/9000'])
+  test('deletes the second lost comment and posts one plain comment', async () => {
+    const { run, fake, methodsOf } = updateSetup({ keepTag: [false, false] })
+    expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not resolved: ClickUp did not keep the mention' })
+    expect(methodsOf()).toEqual(['POST /task/t1/comment', 'GET /task/t1/comment', 'DELETE /comment/9000', 'POST /task/t1/comment', 'GET /task/t1/comment', 'DELETE /comment/9001', 'POST /task/t1/comment'])
+    expect(fake.calls.at(-1)!.body).toEqual({ comment_text: '@42\nFixed it.\nCheck please\n— Shikidan' })
+  })
+
+  test('still posts the plain comment when deleting the second lost comment fails', async () => {
+    const { run, methodsOf } = updateSetup({ keepTag: [false, false], fail: ['DELETE /comment/9001#1'] })
+    expect((await run({ mention: '42' })).warning).toBe('Mention not resolved: ClickUp did not keep the mention')
+    expect(methodsOf().at(-1)).toBe('POST /task/t1/comment')
   })
 
   describe('failures after the comment exists never throw', () => {
@@ -237,8 +257,8 @@ describe('sourcePost update', () => {
     })
 
     test('a mention warning and a status warning are reported together', async () => {
-      const { run } = updateSetup({ keepTag: [false, false], fail: ['PUT /task/t1#1'] })
-      expect(await run({ mention: '42', status: 'in progress' })).toEqual({ commentId: '1700000000000', warning: 'Mention not kept; Status not set: ClickUp returned 500' })
+      const { run } = updateSetup({ fail: ['GET /task/t1/comment#1', 'PUT /task/t1#1'] })
+      expect(await run({ mention: '42', status: 'in progress' })).toEqual({ commentId: '1700000000000', warning: 'Mention not verified: ClickUp returned 500; Status not set: ClickUp returned 500' })
     })
   })
 
@@ -252,7 +272,7 @@ describe('sourcePost update', () => {
   test('an unknown status throws before anything is posted', async () => {
     const { run, methodsOf } = updateSetup()
     await expect(run({ status: 'Shipped', mention: '42' })).rejects.toThrow('This list has no status "Shipped"')
-    expect(methodsOf().filter((call) => call !== 'GET /task/t1' && call !== 'GET /list/L1')).toEqual([])
+    expect(methodsOf()).toEqual(['GET /task/t1', 'GET /list/L1'])
   })
 })
 

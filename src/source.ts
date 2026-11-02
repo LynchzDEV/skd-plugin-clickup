@@ -1,4 +1,4 @@
-import type { ClickUp } from './clickup-api'
+import { ApiError, type ClickUp } from './clickup-api'
 import type { Clock, Deadline } from './deadline'
 import { buildDossier } from './dossier'
 import { downloadReplyImages, isAttachmentUrl, pruneReplyImages, MAX_IMAGES_PER_REPLY, MAX_IMAGES_PER_RESULT, type DownloadedImage, type ImageStore, type SavedImage } from './reply-images'
@@ -98,12 +98,28 @@ type Posted = { created: Created; warning?: string }
 
 const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
-async function postWithMention(api: ClickUp, task: string, userId: string, text: string, deadline: Deadline): Promise<Posted> {
+async function postWithMention(api: ClickUp, task: string, mention: string, resolveUser: () => Promise<string>, text: string, deadline: Deadline): Promise<Posted> {
+  const postPlain = async (reason: string): Promise<Posted> => ({
+    created: (await api.post(`/task/${task}/comment`, { comment_text: `@${mention.trim()}\n${text}` }, deadline)) as Created,
+    warning: `Mention not resolved: ${reason}`,
+  })
+  let userId: string
+  try {
+    userId = await resolveUser()
+  } catch (error) {
+    return postPlain(reasonOf(error))
+  }
   const comment = [{ type: 'tag', user: { id: Number(userId) } }, { text: ` ${text}` }]
-  let created: Created = {}
   for (const attempt of [1, 2]) {
-    created = (await api.post(`/task/${task}/comment`, { comment }, deadline)) as Created
+    let created: Created
+    try {
+      created = (await api.post(`/task/${task}/comment`, { comment }, deadline)) as Created
+    } catch (error) {
+      if (error instanceof ApiError) return postPlain(reasonOf(error))
+      throw error
+    }
     if (created.id == null) return { created, warning: 'Mention not verified: ClickUp did not return the new comment' }
+    const commentPath = `/comment/${encodeURIComponent(String(created.id))}`
     try {
       if (await keepsMention(api, task, String(created.id), userId, deadline)) return { created }
     } catch (error) {
@@ -111,13 +127,15 @@ async function postWithMention(api: ClickUp, task: string, userId: string, text:
     }
     if (attempt === 1) {
       try {
-        await api.delete(`/comment/${encodeURIComponent(String(created.id))}`, deadline)
+        await api.delete(commentPath, deadline)
       } catch (error) {
         return { created, warning: `Mention not kept: ${reasonOf(error)}` }
       }
+    } else {
+      await api.delete(commentPath, deadline).catch(() => undefined)
     }
   }
-  return { created, warning: 'Mention not kept' }
+  return postPlain('ClickUp did not keep the mention')
 }
 
 async function applyStatus(api: ClickUp, task: string, status: string, deadline: Deadline): Promise<{ status?: string; warning?: string }> {
@@ -138,15 +156,17 @@ async function postUpdate(api: ClickUp, task: string, input: Omit<UpdateInput, '
   if (input.lines.length === 0) throw new Error('Nothing to post')
   const mention = typeof input.mention === 'string' && input.mention.trim() !== '' ? input.mention : undefined
   const wantedStatus = typeof input.status === 'string' && input.status.trim() !== '' ? input.status : undefined
-  const needsList = wantedStatus !== undefined || (mention !== undefined && !/^\d+$/.test(mention.trim()))
-  const listId = needsList ? String(((await api.get(`/task/${task}`, deadline)) as { list?: { id?: number | string } }).list?.id ?? '') : ''
-  if (needsList && listId === '') throw new Error('Could not read the list of this task')
-  const status = wantedStatus === undefined ? undefined : await assertStatusExists(api, listId, wantedStatus.trim(), deadline)
-  const userId = mention === undefined ? undefined : await resolveMention(api, listId, mention, deadline)
+  const readListId = async (): Promise<string> => {
+    const id = String(((await api.get(`/task/${task}`, deadline)) as { list?: { id?: number | string } }).list?.id ?? '')
+    if (id === '') throw new Error('Could not read the list of this task')
+    return id
+  }
+  const status = wantedStatus === undefined ? undefined : await assertStatusExists(api, await readListId(), wantedStatus.trim(), deadline)
+  const resolveUser = async (): Promise<string> => (/^\d+$/.test(mention!.trim()) ? mention!.trim() : resolveMention(api, await readListId(), mention!, deadline))
   const text = updateText(input.lines)
-  const { created, warning: mentionWarning } = userId === undefined
+  const { created, warning: mentionWarning } = mention === undefined
     ? { created: (await api.post(`/task/${task}/comment`, { comment_text: text }, deadline)) as Created, warning: undefined }
-    : await postWithMention(api, task, userId, text, deadline)
+    : await postWithMention(api, task, mention, resolveUser, text, deadline)
   const applied = status === undefined ? {} : await applyStatus(api, task, status, deadline)
   const warning = [mentionWarning, applied.warning].filter((item) => item !== undefined).join('; ')
   return { commentId: cursorOf(created, now), ...(applied.status === undefined ? {} : { status: applied.status }), ...(warning === '' ? {} : { warning }) }
