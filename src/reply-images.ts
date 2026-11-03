@@ -28,7 +28,7 @@ export function isAttachmentUrl(url: string): boolean {
   }
 }
 
-function fileStem(commentId: string): string {
+export function fileStem(commentId: string): string {
   return commentId.replace(/[^A-Za-z0-9_-]/g, '-').slice(0, 100)
 }
 
@@ -51,7 +51,7 @@ async function readCapped(body: ReadableStream<Uint8Array> | null, signal: Abort
       total += value.byteLength
       if (total > MAX_IMAGE_BYTES) {
         stop()
-        throw new Error(`image over ${MAX_IMAGE_BYTES} bytes`)
+        throw new Error('too large')
       }
       chunks.push(value)
     }
@@ -60,7 +60,7 @@ async function readCapped(body: ReadableStream<Uint8Array> | null, signal: Abort
   }
 }
 
-async function fetchImage(url: string, store: ImageStore, deadline: Deadline): Promise<{ bytes: Uint8Array; extension: string }> {
+export async function fetchImage(url: string, store: ImageStore, deadline: Deadline): Promise<{ bytes: Uint8Array; extension: string }> {
   const controller = new AbortController()
   const cancelTimer = store.clock.setTimer(Math.min(IMAGE_TIMEOUT_MS, deadline.remaining()), () => controller.abort(new Error('image download timed out')))
   const signal = AbortSignal.any([deadline.signal, controller.signal])
@@ -69,9 +69,10 @@ async function fetchImage(url: string, store: ImageStore, deadline: Deadline): P
     const type = (response.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase()
     const extension = EXTENSION_BY_TYPE[type]
     const declaredSize = Number(response.headers.get('content-length') ?? 0)
-    if (!response.ok || extension === undefined || declaredSize > MAX_IMAGE_BYTES) {
+    const refusal = !response.ok ? `ClickUp returned ${response.status}` : extension === undefined ? `not an image (${type || 'unknown type'})` : declaredSize > MAX_IMAGE_BYTES ? 'too large' : null
+    if (refusal !== null || extension === undefined) {
       await discard(response)
-      throw new Error(`image refused: ${response.status} ${type}`)
+      throw new Error(refusal ?? 'not an image')
     }
     return { bytes: await readCapped(response.body, signal), extension }
   } finally {
@@ -79,11 +80,9 @@ async function fetchImage(url: string, store: ImageStore, deadline: Deadline): P
   }
 }
 
-async function saveImage(store: ImageStore, stem: string, bytes: Uint8Array, extension: string): Promise<SavedImage> {
-  const name = `${stem}.${extension}`
-  const path = `${REPLIES_FOLDER}/${name}`
-  const file = join(store.data, path)
-  const folder = join(store.data, REPLIES_FOLDER)
+export async function writeImage(store: ImageStore, relativeFolder: string, name: string, bytes: Uint8Array): Promise<string> {
+  const file = join(store.data, relativeFolder, name)
+  const folder = join(store.data, relativeFolder)
   const part = join(folder, `.${name}.${randomBytes(8).toString('hex')}${PART_SUFFIX}`)
   await mkdir(folder, { recursive: true })
   try {
@@ -93,7 +92,13 @@ async function saveImage(store: ImageStore, stem: string, bytes: Uint8Array, ext
     await rm(part, { force: true })
     throw error
   }
-  return { name, path }
+  return file
+}
+
+async function saveImage(store: ImageStore, stem: string, bytes: Uint8Array, extension: string): Promise<SavedImage> {
+  const name = `${stem}.${extension}`
+  await writeImage(store, REPLIES_FOLDER, name, bytes)
+  return { name, path: `${REPLIES_FOLDER}/${name}` }
 }
 
 export async function downloadReplyImages(commentId: string, urls: string[], store: ImageStore, deadline: Deadline): Promise<DownloadedImage[]> {
