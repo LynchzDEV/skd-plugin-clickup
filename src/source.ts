@@ -11,7 +11,7 @@ export const ASK_HEADER = 'ขอถามเพิ่มเติมก่อ�
 const TASK_ID = /^[A-Za-z0-9_-]{1,40}$/
 const MAX_TITLE = 500
 const MAX_URL = 2048
-const MAX_CONTEXT = 524288
+const MAX_CONTEXT_BYTES = 491520
 const MAX_THREADS = 10
 const MAX_REPLIES = 100
 const MAX_REPLY_TEXT = 64000
@@ -35,9 +35,9 @@ export function askText(lines: string[]): string {
 export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, clock: Clock, imageStore?: ImageStore): Promise<{ title: string; url: string; contextMarkdown: string; images: SavedImage[] }> {
   const task = taskId(id)
   const body = (await api.get(`/task/${task}`, deadline)) as { name?: string; url?: unknown }
-  const dossier = await buildDossier(api, task, { clock, images: imageStore, maxChars: MAX_CONTEXT }, deadline)
+  const dossier = await buildDossier(api, task, { clock, images: imageStore, maxBytes: MAX_CONTEXT_BYTES }, deadline)
   const url = typeof body.url === 'string' && body.url !== '' && body.url.length <= MAX_URL ? body.url : `https://app.clickup.com/t/${task}`
-  return { title: (body.name?.trim() || task).slice(0, MAX_TITLE), url, contextMarkdown: dossier.markdown.slice(0, MAX_CONTEXT), images: dossier.images }
+  return { title: (body.name?.trim() || task).slice(0, MAX_TITLE), url, contextMarkdown: dossier.markdown, images: dossier.images }
 }
 
 type AskInput = { id: string; kind: 'ask'; lines: string[] }

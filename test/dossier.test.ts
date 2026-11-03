@@ -663,7 +663,7 @@ describe('buildDossier docs, links and coverage', () => {
 
   test('over the size cap the least important sections are omitted and Coverage says which', async () => {
     const { run } = docHarness({ description: `${docUrl('d0')} https://example.com/${'p'.repeat(200)}` }, [], () => ({ body: { name: 'Big', content: 'y'.repeat(4000) } }))
-    const result = await run('root1', { maxChars: 2000 })
+    const result = await run('root1', { maxBytes: 2000 })
     expect(result.markdown.length).toBeLessThanOrEqual(2000)
     expect(result.markdown).toContain('Limit hit: Size limit: these sections were omitted: Other links, Referenced docs')
     expect(result.markdown).toContain('(omitted to fit the size limit)')

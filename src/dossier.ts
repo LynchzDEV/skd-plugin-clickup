@@ -12,10 +12,10 @@ export const COMMENT_CAP_NOTE = 'Showing the newest 200 comments'
 const COMMENT_PAGE_SIZE = 25
 const COMMENT_CAP = 200
 const DOSSIER_STOP_MS = 5000
-const DEFAULT_MAX_CHARS = 524288
+const DEFAULT_MAX_BYTES = 491520
 const TASK_URL_PATTERN = /app\.clickup\.com\/t\/(?:[a-z0-9]+\/)?([a-z0-9]+)/g
 
-export type DossierOptions = { maxDepth?: number; maxTasks?: number; maxChars?: number; clock?: Clock; images?: ImageStore }
+export type DossierOptions = { maxDepth?: number; maxTasks?: number; maxBytes?: number; clock?: Clock; images?: ImageStore }
 
 export type DossierResult = { markdown: string; tasksFetched: number; truncated: boolean; images: SavedImage[] }
 
@@ -124,7 +124,7 @@ class DossierWalk {
         otherLinks: otherLinks(this.nodes, outcomes),
         depthCut: this.depthCut,
         maxDepth: this.maxDepth,
-        maxChars: this.options.maxChars ?? DEFAULT_MAX_CHARS,
+        maxBytes: this.options.maxBytes ?? DEFAULT_MAX_BYTES,
         tasksFetched: this.tasksFetched,
         notes: this.notes,
         nodes: this.nodes,
@@ -353,7 +353,7 @@ type Findings = {
   otherLinks: string[]
   depthCut: number
   maxDepth: number
-  maxChars: number
+  maxBytes: number
   tasksFetched: number
 }
 
@@ -373,14 +373,22 @@ function render(root: DossierNode, findings: Findings): string {
   const assemble = () => assembleDossier(root, sections, findings, omitted)
   let text = assemble()
   for (const title of OMITTED_FIRST) {
-    if (text.length <= findings.maxChars) break
+    if (byteLength(text) <= findings.maxBytes) break
     const section = sections.find((candidate) => candidate.title === title)
     if (!section || section.lines.length === 0) continue
     section.lines = ['(omitted to fit the size limit)']
     omitted.push(title)
     text = assemble()
   }
-  return text.length > findings.maxChars ? text.slice(0, findings.maxChars) : text
+  return byteLength(text) > findings.maxBytes ? sliceBytes(text, findings.maxBytes) : text
+}
+
+const byteLength = (text: string): number => Buffer.byteLength(text, 'utf8')
+
+function sliceBytes(text: string, maxBytes: number): string {
+  let cut = Buffer.from(text, 'utf8').subarray(0, maxBytes).toString('utf8')
+  while (byteLength(cut) > maxBytes) cut = cut.slice(0, -1)
+  return cut
 }
 
 function contentSections(root: DossierNode, findings: Findings): Section[] {

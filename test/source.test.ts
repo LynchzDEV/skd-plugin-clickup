@@ -76,7 +76,18 @@ describe('sourceItem', () => {
     const result = await settle(clock, sourceItem(api, 't1', deadline, clock))
     expect(result.title).toBe('n'.repeat(500))
     expect(result.url).toBe('https://app.clickup.com/t/t1')
-    expect(result.contextMarkdown).toHaveLength(524288)
+    expect(Buffer.byteLength(result.contextMarkdown)).toBe(491520)
+  })
+
+  test('sourceItem keeps a Thai context under the host byte limit with room for the image list', async () => {
+    const { clock, api, deadline } = setup(({ path }) => {
+      if (path === '/task/t1') return { body: { id: 't1', name: 'การ์ด', description: 'ก'.repeat(300000) } }
+      if (path === '/task/t1/comment') return { body: { comments: [] } }
+      return { status: 404, body: {} }
+    })
+    const result = await settle(clock, sourceItem(api, 't1', deadline, clock))
+    expect(Buffer.byteLength(result.contextMarkdown)).toBeLessThanOrEqual(491520)
+    expect(result.contextMarkdown).not.toContain('\uFFFD')
   })
 
   test('sourceItem ignores a url that is not a string', async () => {
