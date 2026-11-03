@@ -35,7 +35,7 @@ export function askText(lines: string[]): string {
 export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, clock: Clock, imageStore?: ImageStore): Promise<{ title: string; url: string; contextMarkdown: string; images: SavedImage[] }> {
   const task = taskId(id)
   const body = (await api.get(`/task/${task}`, deadline)) as { name?: string; url?: unknown }
-  const dossier = await buildDossier(api, task, { clock, images: imageStore }, deadline)
+  const dossier = await buildDossier(api, task, { clock, images: imageStore, maxChars: MAX_CONTEXT }, deadline)
   const url = typeof body.url === 'string' && body.url !== '' && body.url.length <= MAX_URL ? body.url : `https://app.clickup.com/t/${task}`
   return { title: (body.name?.trim() || task).slice(0, MAX_TITLE), url, contextMarkdown: dossier.markdown.slice(0, MAX_CONTEXT), images: dossier.images }
 }

@@ -1,7 +1,8 @@
 import { ApiError, type ClickUp } from './clickup-api'
 import { DEADLINE_ERROR, realClock, type Clock, type Deadline } from './deadline'
-import { dedupeCandidates, downloadDossierImages, type ImageCandidate, type ImageOutcome } from './dossier-images'
-import { commentPartImages, markdownImages } from './dossier-links'
+import { dedupeCandidates, downloadDossierImages, MAX_DOSSIER_IMAGES, type ImageCandidate, type ImageOutcome } from './dossier-images'
+import { docKey, MAX_DOCS, readDoc, type DocRead } from './dossier-docs'
+import { commentPartImages, docRefs, markdownImages, plainLinks, type DocRef } from './dossier-links'
 import type { ImageStore, SavedImage } from './reply-images'
 
 export const TASK_CAP_NOTE = 'Stopped after 60 tasks'
@@ -11,9 +12,10 @@ export const COMMENT_CAP_NOTE = 'Showing the newest 200 comments'
 const COMMENT_PAGE_SIZE = 25
 const COMMENT_CAP = 200
 const DOSSIER_STOP_MS = 5000
+const DEFAULT_MAX_CHARS = 524288
 const TASK_URL_PATTERN = /app\.clickup\.com\/t\/(?:[a-z0-9]+\/)?([a-z0-9]+)/g
 
-export type DossierOptions = { maxDepth?: number; maxTasks?: number; clock?: Clock; images?: ImageStore }
+export type DossierOptions = { maxDepth?: number; maxTasks?: number; maxChars?: number; clock?: Clock; images?: ImageStore }
 
 export type DossierResult = { markdown: string; tasksFetched: number; truncated: boolean; images: SavedImage[] }
 
@@ -86,6 +88,9 @@ class DossierWalk {
   private readonly maxDepth: number
   private readonly maxTasks: number
   private tasksFetched = 0
+  private depthCut = 0
+  private readonly docs: DocRead[] = []
+  private docsFound = 0
   private truncated = false
 
   constructor(
@@ -105,6 +110,7 @@ class DossierWalk {
     await this.walkSubtasks(root, 1)
     this.collectRefs()
     await this.fetchRefs()
+    await this.readDocs()
     const outcomes = await downloadDossierImages(
       dedupeCandidates(imageCandidates(this.nodes, this.refs.flatMap((ref) => (ref.task ? [ref.task] : [])))),
       this.options.images,
@@ -113,6 +119,13 @@ class DossierWalk {
     )
     return {
       markdown: render(root, {
+        docs: this.docs,
+        docsFound: this.docsFound,
+        otherLinks: otherLinks(this.nodes, outcomes),
+        depthCut: this.depthCut,
+        maxDepth: this.maxDepth,
+        maxChars: this.options.maxChars ?? DEFAULT_MAX_CHARS,
+        tasksFetched: this.tasksFetched,
         notes: this.notes,
         nodes: this.nodes,
         refs: this.refs,
@@ -235,6 +248,7 @@ class DossierWalk {
       this.nodes.push(child)
       await this.loadComments(child)
       if (depth < this.maxDepth) await this.walkSubtasks(child, depth + 1)
+      else this.depthCut += (task.subtasks ?? []).filter((nested) => !this.visited.has(nested.id)).length
     }
   }
 
@@ -254,6 +268,24 @@ class DossierWalk {
         for (const match of text.matchAll(TASK_URL_PATTERN)) {
           if (match[1]) add({ id: match[1], relation: 'Mentioned', mentionSource: node.task.name })
         }
+      }
+    }
+  }
+
+  private async readDocs(): Promise<void> {
+    const found = new Map<string, DocRef>()
+    for (const node of this.nodes) {
+      for (const text of textOf(node)) for (const ref of docRefs(text)) found.set(docKey(ref), ref)
+    }
+    this.docsFound = found.size
+    for (const ref of [...found.values()].slice(0, MAX_DOCS)) {
+      if (this.stopForTime()) return
+      try {
+        this.docs.push(await readDoc(this.api, ref, this.deadline, this.budgetGuard))
+      } catch (error) {
+        if (!this.isDeadlineFailure(error)) throw error
+        this.truncated = true
+        return
       }
     }
   }
@@ -309,27 +341,108 @@ function textOf(node: DossierNode): string[] {
   return [body, ...comments]
 }
 
-function render(
-  root: DossierNode,
-  context: { notes: string[]; nodes: DossierNode[]; refs: RefEntry[]; truncated: boolean; clock?: Clock; outcomes: ImageOutcome[] },
-): string {
-  const lines: string[] = []
-  const clock = context.clock ?? realClock
-  lines.push(`# Dossier: ${root.task.name} (${root.task.id})`, '')
-  lines.push('## Summary', ...summaryLines(root.task), '')
-  lines.push('## Description')
-  appendBody(lines, bodyOf(root.task))
-  lines.push('')
-  lines.push('## Fields', ...fieldLines(root.task), '')
-  lines.push('## Subtasks', ...subtaskLines(root), '')
-  lines.push('## Comments', ...commentLines(context.nodes), '')
-  lines.push('## Dependencies and links', ...refLines(context.refs), '')
-  lines.push('## Attachments', ...attachmentLines(context.outcomes))
-  lines.push('')
-  if (context.truncated) lines.push(TIME_NOTE)
-  lines.push(...context.notes)
+type Findings = {
+  notes: string[]
+  nodes: DossierNode[]
+  refs: RefEntry[]
+  truncated: boolean
+  clock?: Clock
+  outcomes: ImageOutcome[]
+  docs: DocRead[]
+  docsFound: number
+  otherLinks: string[]
+  depthCut: number
+  maxDepth: number
+  maxChars: number
+  tasksFetched: number
+}
+
+type Section = { title: string; lines: string[] }
+
+const OMITTED_FIRST = ['Other links', 'Referenced docs', 'Attachments', 'Dependencies and links', 'Comments']
+
+function otherLinks(nodes: DossierNode[], outcomes: ImageOutcome[]): string[] {
+  const skip = new Set(outcomes.map((outcome) => outcome.candidate.url))
+  const links = nodes.flatMap(textOf).flatMap(plainLinks).filter((url) => !skip.has(url))
+  return [...new Set(links)]
+}
+
+function render(root: DossierNode, findings: Findings): string {
+  const sections = contentSections(root, findings)
+  const omitted: string[] = []
+  const assemble = () => assembleDossier(root, sections, findings, omitted)
+  let text = assemble()
+  for (const title of OMITTED_FIRST) {
+    if (text.length <= findings.maxChars) break
+    const section = sections.find((candidate) => candidate.title === title)
+    if (!section || section.lines.length === 0) continue
+    section.lines = ['(omitted to fit the size limit)']
+    omitted.push(title)
+    text = assemble()
+  }
+  return text.length > findings.maxChars ? text.slice(0, findings.maxChars) : text
+}
+
+function contentSections(root: DossierNode, findings: Findings): Section[] {
+  const description: string[] = []
+  appendBody(description, bodyOf(root.task))
+  const docLines = findings.docs.flatMap((doc) => [
+    `### ${doc.title} (${doc.ref.docId}${doc.ref.pageId ? `/${doc.ref.pageId}` : ''})`,
+    ...(doc.error ? [`Could not read this doc (${doc.error})`] : [doc.content]),
+    ...(doc.truncated ? ['(truncated at 50 KB)'] : []),
+  ])
+  return [
+    { title: 'Summary', lines: summaryLines(root.task) },
+    { title: 'Description', lines: description },
+    { title: 'Fields', lines: fieldLines(root.task) },
+    { title: 'Subtasks', lines: subtaskLines(root) },
+    { title: 'Comments', lines: commentLines(findings.nodes) },
+    { title: 'Dependencies and links', lines: refLines(findings.refs) },
+    { title: 'Referenced docs', lines: docLines },
+    { title: 'Attachments', lines: attachmentLines(findings.outcomes) },
+    { title: 'Other links', lines: findings.otherLinks.map((url) => `- ${url}`) },
+  ]
+}
+
+function assembleDossier(root: DossierNode, sections: Section[], findings: Findings, omitted: string[]): string {
+  const clock = findings.clock ?? realClock
+  const optional = new Set(['Referenced docs', 'Other links'])
+  const lines = [`# Dossier: ${root.task.name} (${root.task.id})`, '']
+  for (const section of sections) {
+    if (optional.has(section.title) && section.lines.length === 0) continue
+    lines.push(`## ${section.title}`, ...section.lines, '')
+  }
+  lines.push('## Coverage', ...coverageLines(findings, omitted), '')
   lines.push(`Gathered at ${new Date(clock.now()).toISOString()} from ClickUp`)
   return lines.join('\n')
+}
+
+function coverageLines(findings: Findings, omitted: string[]): string[] {
+  const { nodes, refs, outcomes, docs } = findings
+  const comments = nodes.reduce((sum, node) => sum + node.comments.length, 0)
+  const replies = nodes.reduce((sum, node) => sum + node.comments.reduce((inner, comment) => inner + (comment.replies?.length ?? 0), 0), 0)
+  const saved = outcomes.filter((outcome) => outcome.saved).length
+  const lines = [
+    `- Tasks fetched: ${findings.tasksFetched}`,
+    `- Subtasks expanded: ${nodes.length - 1}`,
+    `- Comments read: ${comments}, replies read: ${replies}`,
+    `- References followed: ${refs.filter((ref) => ref.task).length}`,
+    `- Docs read: ${docs.filter((doc) => !doc.error).length}`,
+    `- Images downloaded: ${saved}, listed only: ${outcomes.length - saved}`,
+  ]
+  const limits: string[] = []
+  if (findings.truncated) limits.push(TIME_NOTE)
+  limits.push(...findings.notes)
+  if (findings.depthCut > 0) limits.push(`Depth limit ${findings.maxDepth}: ${findings.depthCut} deeper subtasks were not expanded`)
+  const cappedComments = nodes.filter((node) => node.hitCommentCap).length
+  if (cappedComments > 0) limits.push(`${COMMENT_CAP_NOTE} (${cappedComments} tasks hit it)`)
+  if (findings.docsFound > MAX_DOCS) limits.push(`Doc limit: read ${MAX_DOCS} of ${findings.docsFound} docs found`)
+  const cutDocs = docs.filter((doc) => doc.truncated).length
+  if (cutDocs > 0) limits.push(`${cutDocs} docs were cut at 50 KB`)
+  const overImages = outcomes.filter((outcome) => outcome.reason?.startsWith('over the')).length
+  if (overImages > 0) limits.push(`Image limit: ${overImages} images beyond the first ${MAX_DOSSIER_IMAGES} were not downloaded`)
+  if (omitted.length > 0) limits.push(`Size limit: these sections were omitted: ${omitted.join(', ')}`)
+  return [...lines, ...(limits.length > 0 ? limits.map((limit) => `- Limit hit: ${limit}`) : ['- No limits were hit'])]
 }
 
 function summaryLines(task: ClickUpTask): string[] {

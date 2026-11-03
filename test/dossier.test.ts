@@ -568,3 +568,104 @@ describe('buildDossier images', () => {
     expect(result.markdown.match(/not downloaded \(over the 30 image limit\)/g)).toHaveLength(2)
   })
 })
+
+describe('buildDossier docs, links and coverage', () => {
+  const docUrl = (docId: string, pageId = 'p1') => `https://app.clickup.com/9001/v/dc/${docId}/${pageId}`
+
+  function docHarness(task: Record<string, unknown>, comments: unknown[], extra: Responder = () => ({ status: 404, body: {} })) {
+    return makeDossier((call) => {
+      if (call.path === '/task/root1') return { body: taskFixture('root1', task) }
+      if (call.path === '/task/root1/comment') return { body: { comments } }
+      return extra(call)
+    })
+  }
+
+  test('a doc url in a comment is fetched from v3 as markdown and rendered', async () => {
+    const { run, fake } = docHarness({}, [commentFixture('c1', { comment_text: `spec: ${docUrl('abc-1', 'abc-9')}.` })], ({ path }) =>
+      path === '/api/v3/workspaces/9001/docs/abc-1/pages/abc-9' ? { body: { name: 'Login spec', content: 'Must support SSO' } } : { status: 404, body: {} },
+    )
+    const result = await run()
+    const call = fake.calls.find((entry) => entry.path.startsWith('/api/v3/'))!
+    expect(call.query.get('content_format')).toBe('text/md')
+    expect(result.markdown).toContain('## Referenced docs')
+    expect(result.markdown).toContain('### Login spec (abc-1/abc-9)')
+    expect(result.markdown).toContain('Must support SSO')
+    expect(result.markdown).toContain('- Docs read: 1')
+    expect(result.markdown).not.toContain('## Other links')
+  })
+
+  test('a docs url without a page lists the pages of the doc, nested ones included', async () => {
+    const { run } = docHarness({ description: 'see https://app.clickup.com/9001/docs/abc-2 now' }, [], ({ path, query }) =>
+      path === '/api/v3/workspaces/9001/docs/abc-2/pages' && query.get('max_page_depth') === '-1'
+        ? { body: [{ name: 'Intro', content: 'Hello', pages: [{ name: 'Child', content: 'Nested text' }] }] }
+        : { status: 404, body: {} },
+    )
+    const result = await run()
+    expect(result.markdown).toContain('Hello')
+    expect(result.markdown).toContain('### Child')
+    expect(result.markdown).toContain('Nested text')
+  })
+
+  test('reads at most 5 docs, cuts each at 50 KB and says so in Coverage', async () => {
+    const urls = Array.from({ length: 7 }, (_v, i) => docUrl(`d${i}`)).join(' ')
+    const { run, fake } = docHarness({ description: urls }, [], () => ({ body: { name: 'Big', content: 'x'.repeat(60000) } }))
+    const result = await run()
+    expect(fake.calls.filter((call) => call.path.startsWith('/api/v3/'))).toHaveLength(5)
+    expect(result.markdown).toContain('(truncated at 50 KB)')
+    expect(result.markdown).toContain('Limit hit: Doc limit: read 5 of 7 docs found')
+    expect(result.markdown).toContain('Limit hit: 5 docs were cut at 50 KB')
+  })
+
+  test('a doc that cannot be read is reported, not fatal', async () => {
+    const { run } = docHarness({ description: docUrl('gone') }, [])
+    const result = await run()
+    expect(result.markdown).toContain('Could not read this doc (ClickUp returned 404)')
+    expect(result.markdown).toContain('- Docs read: 0')
+  })
+
+  test('lists other links once, leaving out task, doc and image links', async () => {
+    const { run } = docHarness(
+      { description: `Figma https://figma.com/file/1, again https://figma.com/file/1. Task https://app.clickup.com/t/zzz ![i](https://t.clickup-attachments.com/i.png) ${docUrl('d0')}` },
+      [commentFixture('c1', { comment_text: 'see (https://example.com/a?b=1)' })],
+      ({ path }) => (path === '/task/zzz' ? { body: taskFixture('zzz') } : path === '/task/zzz/comment' ? { body: emptyComments } : { body: { name: 'D', content: 'c' } }),
+    )
+    const links = (await run()).markdown.split('## Other links\n')[1]!.split('\n\n')[0]!.split('\n')
+    expect(links).toEqual(['- https://figma.com/file/1', '- https://example.com/a?b=1'])
+  })
+
+  test('Coverage counts what was read and names the depth limit', async () => {
+    const { run } = makeDossier(({ path }) => {
+      if (path === '/task/root1') return { body: taskFixture('root1', { subtasks: [{ id: 's1' }] }) }
+      if (path === '/task/s1') return { body: taskFixture('s1', { subtasks: [{ id: 's2' }] }) }
+      if (path === '/task/root1/comment') return { body: { comments: [commentFixture('c1', { reply_count: 1 })] } }
+      if (path === '/comment/c1/reply') return { body: { comments: [commentFixture('r1')] } }
+      return { body: emptyComments }
+    })
+    const result = await run('root1', { maxDepth: 1 })
+    expect(result.markdown).toContain('- Tasks fetched: 2')
+    expect(result.markdown).toContain('- Subtasks expanded: 1')
+    expect(result.markdown).toContain('- Comments read: 1, replies read: 1')
+    expect(result.markdown).toContain('- Images downloaded: 0, listed only: 0')
+    expect(result.markdown).toContain('Limit hit: Depth limit 1: 1 deeper subtasks were not expanded')
+  })
+
+  test('Coverage states the 60-task cap and the image limit, and a clean run says no limits', async () => {
+    const subtasks = Array.from({ length: 62 }, (_v, i) => ({ id: `s${i}` }))
+    const { run } = makeDossier(({ path }) => {
+      if (path === '/task/root1') return { body: taskFixture('root1', { subtasks }) }
+      if (path.endsWith('/comment')) return { body: emptyComments }
+      return { body: taskFixture(path.slice(6)) }
+    })
+    expect((await run()).markdown).toContain(`Limit hit: ${TASK_CAP_NOTE}`)
+    const clean = await makeDossier(({ path }) => (path.endsWith('/comment') ? { body: emptyComments } : { body: taskFixture('root1') })).run()
+    expect(clean.markdown).toContain('- No limits were hit')
+  })
+
+  test('over the size cap the least important sections are omitted and Coverage says which', async () => {
+    const { run } = docHarness({ description: `${docUrl('d0')} https://example.com/${'p'.repeat(200)}` }, [], () => ({ body: { name: 'Big', content: 'y'.repeat(4000) } }))
+    const result = await run('root1', { maxChars: 2000 })
+    expect(result.markdown.length).toBeLessThanOrEqual(2000)
+    expect(result.markdown).toContain('Limit hit: Size limit: these sections were omitted: Other links, Referenced docs')
+    expect(result.markdown).toContain('(omitted to fit the size limit)')
+  })
+})
