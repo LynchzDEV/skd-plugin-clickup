@@ -1,6 +1,7 @@
 import { DEADLINE_ERROR, realClock, type Clock, type Deadline } from './deadline'
 
 export const CLICKUP_BASE = 'https://api.clickup.com/api/v2'
+const CLICKUP_ORIGIN = 'https://api.clickup.com/api'
 
 const MAX_IN_FLIGHT = 4
 const REQUEST_TIMEOUT_MS = 10000
@@ -135,7 +136,7 @@ export function createClickUp(token: string, deps: ClickUpDeps = {}): ClickUp {
       requestController.abort(new Unreachable())
     })
     try {
-      const response = await fetchImpl(CLICKUP_BASE + path, {
+      const response = await fetchImpl((path.startsWith('/v3/') ? CLICKUP_ORIGIN : CLICKUP_BASE) + path, {
         ...init,
         headers: { Authorization: token, ...(init.headers as Record<string, string> | undefined) },
         signal: AbortSignal.any([deadline.signal, requestController.signal]),

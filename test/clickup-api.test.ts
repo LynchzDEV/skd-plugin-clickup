@@ -51,6 +51,12 @@ describe('createClickUp responses', () => {
     expect(fake.calls[0].url).toBe('https://api.clickup.com/api/v2/user')
   })
 
+  test('a /v3/ path goes to the v3 api with the same token header', async () => {
+    const { api, fake, clock } = makeApi(() => ({ body: { ok: true } }))
+    await get(clock, api, '/v3/workspaces/9/docs/d1/pages/p1')
+    expect(fake.calls[0].url).toBe('https://api.clickup.com/api/v3/workspaces/9/docs/d1/pages/p1')
+  })
+
   test('401 throws TokenRejected with the friendly message', async () => {
     const { api, clock } = makeApi(() => ({ status: 401, body: {} }))
     await expect(get(clock, api, '/user')).rejects.toBeInstanceOf(TokenRejected)
