@@ -27,8 +27,19 @@ type ClickUpTask = {
   name: string
   description?: string
   text_content?: string
+  markdown_description?: string
   status?: { status?: string }
   assignees?: Array<{ username?: string }>
+  creator?: { username?: string }
+  watchers?: Array<{ username?: string }>
+  date_created?: number | string | null
+  date_updated?: number | string | null
+  start_date?: number | string | null
+  due_date?: number | string | null
+  date_closed?: number | string | null
+  priority?: { priority?: string } | null
+  time_estimate?: number | string | null
+  checklists?: Array<{ name?: string; items?: Array<{ name?: string; resolved?: boolean }> }>
   tags?: Array<{ name?: string }>
   space?: { name?: string }
   folder?: { name?: string; hidden?: boolean }
@@ -104,7 +115,7 @@ class DossierWalk {
   }
 
   private async fetchTask(id: string): Promise<ClickUpTask> {
-    const task = (await this.api.get(`/task/${id}?include_subtasks=true`, this.deadline, this.budgetGuard)) as ClickUpTask
+    const task = (await this.api.get(`/task/${id}?include_subtasks=true&include_markdown_description=true`, this.deadline, this.budgetGuard)) as ClickUpTask
     this.tasksFetched += 1
     this.visited.add(id)
     return task
@@ -259,6 +270,10 @@ class DossierWalk {
   }
 }
 
+function bodyOf(task: ClickUpTask): string {
+  return task.markdown_description || task.text_content || task.description || ''
+}
+
 function dependencyTargets(task: ClickUpTask): string[] {
   return (task.dependencies ?? [])
     .map((entry) => relatedDependencyId(entry, task.id))
@@ -274,7 +289,7 @@ function relatedDependencyId(entry: ClickUpDependency, ownId: string): string | 
 }
 
 function textOf(node: DossierNode): string[] {
-  const body = node.task.text_content || node.task.description || ''
+  const body = bodyOf(node.task)
   const comments = node.comments.flatMap((comment) => [
     comment.comment_text ?? '',
     ...(comment.replies ?? []).map((reply) => reply.comment_text ?? ''),
@@ -291,7 +306,7 @@ function render(
   lines.push(`# Dossier: ${root.task.name} (${root.task.id})`, '')
   lines.push('## Summary', ...summaryLines(root.task), '')
   lines.push('## Description')
-  appendBody(lines, root.task.text_content || root.task.description || '')
+  appendBody(lines, bodyOf(root.task))
   lines.push('')
   lines.push('## Fields', ...fieldLines(root.task), '')
   lines.push('## Subtasks', ...subtaskLines(root), '')
@@ -320,8 +335,46 @@ function summaryLines(task: ClickUpTask): string[] {
   if (assignees) lines.push(`Assignees: ${assignees}`)
   const tags = (task.tags ?? []).map((tag) => tag.name).filter(Boolean).join(', ')
   if (tags) lines.push(`Tags: ${tags}`)
+  lines.push(...headerLines(task))
   lines.push(`URL: https://app.clickup.com/t/${task.id}`)
   return lines
+}
+
+const names = (people: Array<{ username?: string }> | undefined): string =>
+  (people ?? []).map((person) => person.username).filter(Boolean).join(', ')
+
+function isoDay(value: number | string | null | undefined): string {
+  return dayOf(value ?? undefined)
+}
+
+function headerLines(task: ClickUpTask): string[] {
+  const lines: string[] = []
+  if (task.creator?.username) lines.push(`Creator: ${task.creator.username}`)
+  const watchers = names(task.watchers)
+  if (watchers) lines.push(`Watchers: ${watchers}`)
+  if (task.priority?.priority) lines.push(`Priority: ${task.priority.priority}`)
+  const dates = [
+    ['created', task.date_created],
+    ['updated', task.date_updated],
+    ['start', task.start_date],
+    ['due', task.due_date],
+    ['closed', task.date_closed],
+  ]
+    .map(([label, value]) => ({ label, day: isoDay(value as number | string | null | undefined) }))
+    .filter((entry) => entry.day !== '')
+    .map((entry) => `${entry.label} ${entry.day}`)
+  if (dates.length > 0) lines.push(`Dates: ${dates.join(', ')}`)
+  const estimate = Number(task.time_estimate ?? 0)
+  if (estimate > 0) lines.push(`Time estimate: ${Math.round((estimate / 3600000) * 10) / 10} h`)
+  lines.push(...checklistLines(task, ''))
+  return lines
+}
+
+function checklistLines(task: ClickUpTask, indent: string): string[] {
+  return (task.checklists ?? []).flatMap((checklist) => [
+    `${indent}Checklist ${checklist.name ?? ''}:`,
+    ...(checklist.items ?? []).map((item) => `${indent}- [${item.resolved ? 'x' : ' '}] ${item.name ?? ''}`),
+  ])
 }
 
 function appendBody(lines: string[], body: string): void {
@@ -362,8 +415,9 @@ function subtaskLines(root: DossierNode): string[] {
   const walk = (children: DossierNode[], depth: number) => {
     for (const child of children) {
       const indent = '  '.repeat(depth)
-      lines.push(`${indent}- **${child.task.name}** (${child.task.id}) — ${child.task.status?.status ?? ''}`)
-      const body = child.task.text_content || child.task.description || ''
+      lines.push(`${indent}- **${child.task.name}** (${child.task.id}) — ${child.task.status?.status ?? ''}${shortHeader(child.task)}`)
+      for (const line of checklistLines(child.task, `${indent}  `)) lines.push(line)
+      const body = bodyOf(child.task)
       for (const line of body.split('\n')) {
         if (line.trim()) lines.push(`${indent}  ${line.trim()}`)
       }
@@ -372,6 +426,15 @@ function subtaskLines(root: DossierNode): string[] {
   }
   walk(root.children, 0)
   return lines
+}
+
+function shortHeader(task: ClickUpTask): string {
+  const parts = [
+    names(task.assignees) && `assignees: ${names(task.assignees)}`,
+    isoDay(task.due_date) && `due: ${isoDay(task.due_date)}`,
+    task.priority?.priority && `priority: ${task.priority.priority}`,
+  ].filter(Boolean)
+  return parts.length > 0 ? ` · ${parts.join(' · ')}` : ''
 }
 
 function dayOf(date: number | string | undefined): string {

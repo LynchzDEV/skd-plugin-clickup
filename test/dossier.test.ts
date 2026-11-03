@@ -438,3 +438,47 @@ describe('buildDossier time budget', () => {
     expect(finished.value.markdown).not.toContain('reply c13')
   })
 })
+
+describe('buildDossier header fields', () => {
+  const day = (iso: string) => String(Date.parse(iso))
+
+  test('renders creator, watchers, priority, dates, estimate and checklists for the root and a short form for subtasks', async () => {
+    const { run, fake } = makeDossier(({ path }) => {
+      if (path === '/task/root1') {
+        return {
+          body: taskFixture('root1', {
+            markdown_description: 'Use **bold** copy',
+            creator: { username: 'Mac' },
+            watchers: [{ username: 'Ploy' }, { username: 'Nok' }],
+            priority: { priority: 'high' },
+            date_created: day('2025-01-02T00:00:00Z'),
+            date_updated: day('2025-01-03T00:00:00Z'),
+            start_date: day('2025-01-04T00:00:00Z'),
+            due_date: day('2025-01-05T00:00:00Z'),
+            date_closed: null,
+            time_estimate: 5400000,
+            checklists: [{ name: 'Release', items: [{ name: 'Tag', resolved: true }, { name: 'Deploy', resolved: false }] }],
+            subtasks: [{ id: 'sub1' }],
+          }),
+        }
+      }
+      if (path === '/task/sub1') {
+        return { body: taskFixture('sub1', { assignees: [{ username: 'Ploy' }], due_date: day('2025-02-01T00:00:00Z'), priority: { priority: 'low' }, checklists: [{ name: 'QA', items: [{ name: 'Smoke', resolved: false }] }] }) }
+      }
+      return { body: emptyComments }
+    })
+    const { markdown } = await run()
+    expect(markdown).toContain('Creator: Mac')
+    expect(markdown).toContain('Watchers: Ploy, Nok')
+    expect(markdown).toContain('Priority: high')
+    expect(markdown).toContain('Dates: created 2025-01-02, updated 2025-01-03, start 2025-01-04, due 2025-01-05')
+    expect(markdown).not.toContain('closed')
+    expect(markdown).toContain('Time estimate: 1.5 h')
+    expect(markdown).toContain('- [x] Tag')
+    expect(markdown).toContain('- [ ] Deploy')
+    expect(markdown).toContain('Use **bold** copy')
+    expect(markdown).toContain('(sub1) — Open · assignees: Ploy · due: 2025-02-01 · priority: low')
+    expect(markdown).toContain('- [ ] Smoke')
+    expect(fake.calls.find((call) => call.path === '/task/root1')?.query.get('include_markdown_description')).toBe('true')
+  })
+})
