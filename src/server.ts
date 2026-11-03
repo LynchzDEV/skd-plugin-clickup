@@ -8,6 +8,7 @@ import { buildDossier } from './dossier'
 import { treeChildren, type TreeNode } from './tree'
 import { parseClickUpLink } from './links'
 import { applyFilters, emptyGroup, matchesSearch, sanitizeGroup } from './filters'
+import type { ImageStore } from './reply-images'
 import { sourceItem, sourcePost, sourceReplies, type PostInput } from './source'
 
 const METHOD_TIMEOUT_MS = 25000
@@ -64,6 +65,8 @@ export function createMethods(deps: PluginDeps = {}) {
       return result
     })
   }
+
+  const imageStoreOf = (ctx: ServerContext): ImageStore => ({ data: ctx.data, fetch: deps.fetch ?? fetch, clock, log: (message) => ctx.log(message) })
 
   async function myUserId(api: ClickUp, deadline: Deadline): Promise<string | null> {
     try {
@@ -179,16 +182,16 @@ export function createMethods(deps: PluginDeps = {}) {
     },
 
     'task.dossier': async (params: { taskId: string }, ctx: ServerContext) =>
-      withClickUp(ctx, (api, deadline) => buildDossier(api, params.taskId, { clock }, deadline)),
+      withClickUp(ctx, (api, deadline) => buildDossier(api, params.taskId, { clock, images: imageStoreOf(ctx) }, deadline)),
 
     'source.item': async (params: { id: string }, ctx: ServerContext) =>
-      withClickUp(ctx, (api, deadline) => sourceItem(api, params.id, deadline, clock)),
+      withClickUp(ctx, (api, deadline) => sourceItem(api, params.id, deadline, clock, imageStoreOf(ctx))),
 
     'source.post': async (params: PostInput, ctx: ServerContext) =>
       withClickUp(ctx, (api, deadline) => sourcePost(api, params, deadline, clock.now())),
 
     'source.replies': async (params: { id: string; sinceId: string | null }, ctx: ServerContext) =>
-      withClickUp(ctx, (api, deadline) => sourceReplies(api, params, deadline, { data: ctx.data, fetch: deps.fetch ?? fetch, clock, log: (message) => ctx.log(message) })),
+      withClickUp(ctx, (api, deadline) => sourceReplies(api, params, deadline, imageStoreOf(ctx))),
   }
 }
 

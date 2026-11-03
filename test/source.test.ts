@@ -52,6 +52,21 @@ describe('sourceItem', () => {
     expect(result.contextMarkdown).toContain('# Dossier: Login copy (t1)')
   })
 
+  test('sourceItem returns the downloaded images with absolute paths', async () => {
+    const { clock, api, deadline } = setup(({ path }) => {
+      if (path === '/task/t1') return { body: { id: 't1', name: 'Shots', attachments: [{ title: 'a.png', url: 'https://x.clickup-attachments.com/a.png' }] } }
+      if (path === '/task/t1/comment') return { body: { comments: [] } }
+      return { status: 404, body: {} }
+    })
+    const data = mkdtempSync(join(tmpdir(), 'source-item-'))
+    dataDirs.push(data)
+    const images = fakeImages(() => ({ type: 'image/png' }))
+    const result = await settle(clock, sourceItem(api, 't1', deadline, clock, { data, fetch: images.fetchImpl, clock, log: () => {} }))
+    expect(result.images).toEqual([{ name: '01-a.png', path: join(data, 'source-items/t1/01-a.png') }])
+    expect(existsSync(result.images[0]!.path)).toBe(true)
+    expect(result.contextMarkdown).toContain('saved as 01-a.png')
+  })
+
   test('sourceItem clamps the title, an oversized link and the context to the host limits', async () => {
     const { clock, api, deadline } = setup(({ path }) => {
       if (path === '/task/t1') return { body: { id: 't1', name: 'n'.repeat(600), url: `https://app.clickup.com/${'x'.repeat(2100)}`, description: 'd'.repeat(600000) } }

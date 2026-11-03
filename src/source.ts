@@ -1,6 +1,7 @@
 import { ApiError, type ClickUp } from './clickup-api'
 import type { Clock, Deadline } from './deadline'
 import { buildDossier } from './dossier'
+import { commentPartImages } from './dossier-links'
 import { downloadReplyImages, isAttachmentUrl, pruneReplyImages, MAX_IMAGES_PER_REPLY, MAX_IMAGES_PER_RESULT, type DownloadedImage, type ImageStore, type SavedImage } from './reply-images'
 
 export const ASK_SIGNATURE = '— Shikidan'
@@ -31,12 +32,12 @@ export function askText(lines: string[]): string {
   return `${ASK_HEADER}\n\n${numbered}\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ\n${ASK_SIGNATURE}`
 }
 
-export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, clock: Clock): Promise<{ title: string; url: string; contextMarkdown: string }> {
+export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, clock: Clock, imageStore?: ImageStore): Promise<{ title: string; url: string; contextMarkdown: string; images: SavedImage[] }> {
   const task = taskId(id)
   const body = (await api.get(`/task/${task}`, deadline)) as { name?: string; url?: unknown }
-  const dossier = await buildDossier(api, task, { clock }, deadline)
+  const dossier = await buildDossier(api, task, { clock, images: imageStore }, deadline)
   const url = typeof body.url === 'string' && body.url !== '' && body.url.length <= MAX_URL ? body.url : `https://app.clickup.com/t/${task}`
-  return { title: (body.name?.trim() || task).slice(0, MAX_TITLE), url, contextMarkdown: dossier.markdown.slice(0, MAX_CONTEXT) }
+  return { title: (body.name?.trim() || task).slice(0, MAX_TITLE), url, contextMarkdown: dossier.markdown.slice(0, MAX_CONTEXT), images: dossier.images }
 }
 
 type AskInput = { id: string; kind: 'ask'; lines: string[] }
@@ -176,17 +177,6 @@ type RawComment = { id?: string | number; date?: string | number; comment_text?:
 type CommentList = { comments?: RawComment[] }
 export type SourceReply = { id: string; author: string; text: string; images: SavedImage[] }
 
-function imageLinks(parts: unknown): string[] {
-  if (!Array.isArray(parts)) return []
-  return parts.flatMap((part) => {
-    if (part === null || typeof part !== 'object') return []
-    const item = part as { type?: string; url?: unknown; image?: { url?: unknown }; attachment?: { url?: unknown } }
-    if (item.type !== 'image' && item.type !== 'attachment') return []
-    const url = item.image?.url ?? item.attachment?.url ?? item.url
-    return typeof url === 'string' ? [url] : []
-  })
-}
-
 export function isOwnComment(text: string): boolean {
   const signature = text.split('\n').map((line) => line.trim()).filter((line) => line !== '').at(-1)
   return signature === ASK_SIGNATURE || signature === LEGACY_ASK_SIGNATURE
@@ -209,7 +199,7 @@ type ImagePlan = { raw: RawComment; links: string[]; wanted: string[] }
 function planImages(comments: RawComment[]): ImagePlan[] {
   return comments.reduce<{ plans: ImagePlan[]; left: number }>(
     ({ plans, left }, raw) => {
-      const links = imageLinks(raw.comment)
+      const links = commentPartImages(raw.comment)
       const wanted = links.filter(isAttachmentUrl).slice(0, Math.min(MAX_IMAGES_PER_REPLY, left))
       return { plans: [...plans, { raw, links, wanted }], left: left - wanted.length }
     },

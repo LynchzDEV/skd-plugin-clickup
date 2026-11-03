@@ -1,8 +1,12 @@
-import { describe, expect, test } from 'bun:test'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createClickUp, type ClickUp } from '../src/clickup-api'
 import { createDeadline } from '../src/deadline'
 import { buildDossier, TASK_CAP_NOTE, TIME_NOTE, COMMENT_CAP_NOTE, type DossierResult } from '../src/dossier'
 import { fakeClock, settle, type FakeClock } from './helpers/fake-clock'
+import { fakeImages, type ImageReply } from './helpers/fake-images'
 import { fakeClickUp, outcome, type FakeClickUp, type Responder } from './helpers/fake-clickup'
 
 type TaskFixture = Record<string, unknown> & { id: string; name: string }
@@ -112,7 +116,7 @@ describe('buildDossier traversal', () => {
     expect(result.markdown).toContain('second reply')
   })
 
-  test('renders attachments as links', async () => {
+  test('lists attachments with why they were not downloaded', async () => {
     const { run } = makeDossier(({ path }) => {
       if (path === '/task/root1') {
         return { body: taskFixture('root1', { attachments: [{ title: 'shot.png', url: 'https://img.example/1.png' }] }) }
@@ -121,7 +125,7 @@ describe('buildDossier traversal', () => {
       return { status: 404, body: {} }
     })
     const result = await run()
-    expect(result.markdown).toContain('- [shot.png](https://img.example/1.png)')
+    expect(result.markdown).toContain('- shot.png — https://img.example/1.png — not downloaded (downloads are off)')
   })
 
   test('follows documented dependency objects and linked tasks one hop without expanding them', async () => {
@@ -480,5 +484,87 @@ describe('buildDossier header fields', () => {
     expect(markdown).toContain('(sub1) — Open · assignees: Ploy · due: 2025-02-01 · priority: low')
     expect(markdown).toContain('- [ ] Smoke')
     expect(fake.calls.find((call) => call.path === '/task/root1')?.query.get('include_markdown_description')).toBe('true')
+  })
+})
+
+describe('buildDossier images', () => {
+  const dirs: string[] = []
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+  })
+  const host = (name: string) => `https://t1.clickup-attachments.com/${name}`
+
+  function imageDossier(task: Record<string, unknown>, comments: unknown[], image: (url: string) => ImageReply = () => ({ type: 'image/png' })) {
+    const clock = fakeClock()
+    const data = mkdtempSync(join(tmpdir(), 'dossier-images-'))
+    dirs.push(data)
+    const images = fakeImages(image)
+    const fake = fakeClickUp(clock, ({ path }) => {
+      if (path === '/task/root1') return { body: taskFixture('root1', task) }
+      if (path === '/task/root1/comment') return { body: { comments } }
+      if (path === '/comment/c1/reply') return { body: { comments: [commentFixture('r1', { comment: [{ type: 'image', image: { url: host('part.png') } }, { type: 'image', image: { url: host('reply.png') } }] })] } }
+      return { status: 404, body: {} }
+    })
+    const api = createClickUp('pk_images', { fetch: fake.fetchImpl, clock })
+    const run = async () => {
+      const deadline = createDeadline(25000, clock)
+      try {
+        return await settle(clock, buildDossier(api, 'root1', { clock, images: { data, fetch: images.fetchImpl, clock, log: () => {} } }, deadline))
+      } finally {
+        deadline.dispose()
+      }
+    }
+    return { run, images, data }
+  }
+
+  test('collects attachment, markdown, comment part and reply images once each and saves them', async () => {
+    const comment = commentFixture('c1', { reply_count: 1, comment: [{ type: 'image', image: { url: host('part.png') } }, { type: 'attachment', attachment: { url: host('att-part.png') } }] })
+    const { run } = imageDossier(
+      { markdown_description: `Look ![mock](${host('inline.png')}) and again ![dup](${host('shot.png')})`, attachments: [{ title: 'shot.png', url: host('shot.png'), extension: 'png' }] },
+      [comment],
+    )
+    const result = await run()
+    expect(result.images.map((image) => image.name)).toEqual(['01-shot.png', '02-mock.png', '03-comment-image.png', '04-comment-image.png', '05-comment-image.png'])
+    for (const image of result.images) expect(existsSync(image.path) && image.path.startsWith('/')).toBe(true)
+    expect(result.markdown).toContain(`- shot.png — ${host('shot.png')} — saved as 01-shot.png`)
+    expect(result.markdown.split(host('shot.png')).length - 1).toBe(2)
+  })
+
+  test('lists images it must not download with the reason', async () => {
+    const reasons: Record<string, ImageReply> = {
+      [host('big.png')]: { type: 'image/png', length: '99999999' },
+      [host('page.png')]: { type: 'text/html' },
+      [host('broken.png')]: 'fail',
+    }
+    const { run, images } = imageDossier(
+      {
+        attachments: [
+          { title: 'elsewhere', url: 'https://evil.example/x.png', extension: 'png' },
+          { title: 'big', url: host('big.png') },
+          { title: 'page', url: host('page.png') },
+          { title: 'broken', url: host('broken.png') },
+          { title: 'spec.pdf', url: host('spec.pdf'), extension: 'pdf' },
+        ],
+      },
+      [],
+      (url) => reasons[url] ?? { type: 'image/png' },
+    )
+    const result = await run()
+    expect(result.images).toEqual([])
+    expect(result.markdown).toContain('evil.example/x.png — not downloaded (not a ClickUp attachment host)')
+    expect(result.markdown).toContain('— not downloaded (too large)')
+    expect(result.markdown).toContain('— not downloaded (not an image (text/html))')
+    expect(result.markdown).toContain('— not downloaded (network down)')
+    expect(result.markdown).toContain('spec.pdf — ' + host('spec.pdf') + ' — not downloaded (not an image)')
+    expect(images.calls.map((call) => call.url).sort()).toEqual([host('big.png'), host('broken.png'), host('page.png')])
+  })
+
+  test('downloads at most 30 images and lists the rest', async () => {
+    const attachments = Array.from({ length: 32 }, (_v, i) => ({ title: `a${i}`, url: host(`a${i}.png`) }))
+    const { run, images } = imageDossier({ attachments }, [])
+    const result = await run()
+    expect(result.images).toHaveLength(30)
+    expect(images.calls).toHaveLength(30)
+    expect(result.markdown.match(/not downloaded \(over the 30 image limit\)/g)).toHaveLength(2)
   })
 })

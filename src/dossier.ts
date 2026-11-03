@@ -1,5 +1,8 @@
 import { ApiError, type ClickUp } from './clickup-api'
 import { DEADLINE_ERROR, realClock, type Clock, type Deadline } from './deadline'
+import { dedupeCandidates, downloadDossierImages, type ImageCandidate, type ImageOutcome } from './dossier-images'
+import { commentPartImages, markdownImages } from './dossier-links'
+import type { ImageStore, SavedImage } from './reply-images'
 
 export const TASK_CAP_NOTE = 'Stopped after 60 tasks'
 export const TIME_NOTE = 'Stopped early to stay within time; some items are missing.'
@@ -10,9 +13,9 @@ const COMMENT_CAP = 200
 const DOSSIER_STOP_MS = 5000
 const TASK_URL_PATTERN = /app\.clickup\.com\/t\/(?:[a-z0-9]+\/)?([a-z0-9]+)/g
 
-export type DossierOptions = { maxDepth?: number; maxTasks?: number; clock?: Clock }
+export type DossierOptions = { maxDepth?: number; maxTasks?: number; clock?: Clock; images?: ImageStore }
 
-export type DossierResult = { markdown: string; tasksFetched: number; truncated: boolean }
+export type DossierResult = { markdown: string; tasksFetched: number; truncated: boolean; images: SavedImage[] }
 
 type CustomField = {
   name?: string
@@ -47,7 +50,7 @@ type ClickUpTask = {
   custom_fields?: CustomField[]
   dependencies?: ClickUpDependency[]
   linked_tasks?: Array<{ task_id?: string }>
-  attachments?: Array<{ title?: string; url?: string }>
+  attachments?: Array<{ title?: string; url?: string; extension?: string }>
   subtasks?: Array<{ id: string }>
 }
 
@@ -57,6 +60,7 @@ type Comment = {
   user?: { username?: string }
   date?: number | string
   reply_count?: number | string
+  comment?: unknown
   replies?: Comment[]
 }
 
@@ -101,6 +105,12 @@ class DossierWalk {
     await this.walkSubtasks(root, 1)
     this.collectRefs()
     await this.fetchRefs()
+    const outcomes = await downloadDossierImages(
+      dedupeCandidates(imageCandidates(this.nodes, this.refs.flatMap((ref) => (ref.task ? [ref.task] : [])))),
+      this.options.images,
+      `source-items/${taskId}`,
+      this.deadline,
+    )
     return {
       markdown: render(root, {
         notes: this.notes,
@@ -108,9 +118,11 @@ class DossierWalk {
         refs: this.refs,
         truncated: this.truncated,
         clock: this.options.clock,
+        outcomes,
       }),
       tasksFetched: this.tasksFetched,
       truncated: this.truncated,
+      images: outcomes.flatMap((outcome) => (outcome.saved ? [outcome.saved] : [])),
     }
   }
 
@@ -299,7 +311,7 @@ function textOf(node: DossierNode): string[] {
 
 function render(
   root: DossierNode,
-  context: { notes: string[]; nodes: DossierNode[]; refs: RefEntry[]; truncated: boolean; clock?: Clock },
+  context: { notes: string[]; nodes: DossierNode[]; refs: RefEntry[]; truncated: boolean; clock?: Clock; outcomes: ImageOutcome[] },
 ): string {
   const lines: string[] = []
   const clock = context.clock ?? realClock
@@ -312,7 +324,7 @@ function render(
   lines.push('## Subtasks', ...subtaskLines(root), '')
   lines.push('## Comments', ...commentLines(context.nodes), '')
   lines.push('## Dependencies and links', ...refLines(context.refs), '')
-  lines.push('## Attachments', ...attachmentLines(context.nodes, context.refs))
+  lines.push('## Attachments', ...attachmentLines(context.outcomes))
   lines.push('')
   if (context.truncated) lines.push(TIME_NOTE)
   lines.push(...context.notes)
@@ -474,16 +486,25 @@ function refLines(refs: RefEntry[]): string[] {
   return lines
 }
 
-function attachmentLines(nodes: DossierNode[], refs: RefEntry[]): string[] {
-  const seen = new Set<string>()
-  const lines: string[] = []
-  const tasks = [...nodes.map((node) => node.task), ...refs.flatMap((ref) => (ref.task ? [ref.task] : []))]
-  for (const task of tasks) {
-    for (const attachment of task.attachments ?? []) {
-      if (!attachment.url || seen.has(attachment.url)) continue
-      seen.add(attachment.url)
-      lines.push(`- [${attachment.title ?? attachment.url}](${attachment.url})`)
-    }
-  }
-  return lines
+function attachmentLines(outcomes: ImageOutcome[]): string[] {
+  return outcomes.map(({ candidate, saved, reason }) =>
+    `- ${candidate.title} — ${candidate.url} — ${saved ? `saved as ${saved.name}` : `not downloaded (${reason ?? 'unknown'})`}`,
+  )
+}
+
+function imageCandidates(nodes: DossierNode[], refTasks: ClickUpTask[]): ImageCandidate[] {
+  const fromTask = (task: ClickUpTask): ImageCandidate[] => [
+    ...(task.attachments ?? []).flatMap((attachment) =>
+      attachment.url ? [{ url: attachment.url, title: attachment.title ?? attachment.url, extension: attachment.extension }] : [],
+    ),
+    ...markdownImages(bodyOf(task)),
+  ]
+  const fromComments = (node: DossierNode): ImageCandidate[] =>
+    node.comments.flatMap((comment) =>
+      [comment, ...(comment.replies ?? [])].flatMap((entry) => [
+        ...commentPartImages(entry.comment).map((url) => ({ url, title: 'comment image' })),
+        ...markdownImages(entry.comment_text ?? ''),
+      ]),
+    )
+  return [...nodes.flatMap((node) => [...fromTask(node.task), ...fromComments(node)]), ...refTasks.flatMap(fromTask)]
 }
