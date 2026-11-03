@@ -12,7 +12,7 @@ It runs **isolated**. It can reach `api.clickup.com` and nothing else, start cha
 
 1. Paste a ClickUp personal token (ClickUp, Settings, Apps, Generate). It stays on this machine.
 2. Add a board: browse Workspace → Space → Folder → List, or paste a list or board-view link. Give it a folder, the repo sessions should open in.
-3. Hover a task card and click **Start chat** or **Start terminal**. The launcher opens with the board's folder, and the AI first reads a dossier of the task: description, subtasks, comments and replies, linked tasks, custom fields and attachment links.
+3. Hover a task card and click **Start chat** or **Start terminal**. The launcher opens with the board's folder, and the AI first reads a dossier of the task: header (status, people, dates, priority, checklists), description, subtasks, comments and replies, linked tasks, custom fields, referenced ClickUp Docs, other links and a Coverage section naming every limit that cut something. `source.item` and `task.dossier` also download up to 30 inline and attached images (ClickUp attachment hosts only, 3.75 MB each) into the plugin data folder and return them as `images: [{ name, path }]`; Shikidan copies them next to the context.
 
 The board refreshes when you open it or click Refresh. Nothing polls in the background. The only things written to ClickUp are comments Shikidan's queue posts (below).
 
@@ -23,7 +23,7 @@ The board refreshes when you open it or click Refresh. Nothing polls in the back
 ## Limits
 
 - ClickUp allows 100 requests a minute per token. When it is busy the board says so and when to try again.
-- A dossier stops at 60 tasks, the newest 200 comments per task, and about 25 seconds; it says when it stopped early.
+- A dossier stops at 60 tasks, depth 3, the newest 200 comments per task, 5 Docs of 50 KB, 30 images, 512 KB and about 25 seconds; Coverage says which limit was hit.
 - Pasted board views keep their filters only when ClickUp's view-tasks API is available to your account; otherwise the board shows the whole list and says so.
 
 ## Develop
