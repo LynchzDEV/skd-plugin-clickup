@@ -4,9 +4,9 @@ import { buildDossier } from './dossier'
 import { commentPartImages } from './dossier-links'
 import { downloadReplyImages, isAttachmentUrl, pruneReplyImages, MAX_IMAGES_PER_REPLY, MAX_IMAGES_PER_RESULT, type DownloadedImage, type ImageStore, type SavedImage } from './reply-images'
 
-export const ASK_SIGNATURE = '— Shikidan'
-// ponytail: legacy signature on asks posted before Shikidan, drop once no open task still carries one
-const LEGACY_ASK_SIGNATURE = '— Mission Control'
+export const OWN_MARKER = '\u2060\u2063\u2060'
+// ponytail: visible signatures on comments posted by older versions, drop once no open task still carries one
+const LEGACY_SIGNATURES = ['— Shikidan', '— Mission Control']
 export const ASK_HEADER = 'ขอถามเพิ่มเติมก่อนเริ่มงานนี้นิดนึงครับ'
 const TASK_ID = /^[A-Za-z0-9_-]{1,40}$/
 const MAX_TITLE = 500
@@ -29,7 +29,7 @@ function taskId(id: unknown): string {
 
 export function askText(lines: string[]): string {
   const numbered = lines.map((line, index) => `${index + 1}. ${line}`).join('\n')
-  return `${ASK_HEADER}\n\n${numbered}\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ\n${ASK_SIGNATURE}`
+  return `${ASK_HEADER}\n\n${numbered}\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ${OWN_MARKER}`
 }
 
 export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, clock: Clock, imageStore?: ImageStore): Promise<{ title: string; url: string; contextMarkdown: string; images: SavedImage[] }> {
@@ -59,7 +59,7 @@ export async function sourcePost(api: ClickUp, input: PostInput, deadline: Deadl
   return { commentId: cursorOf(body, now) }
 }
 
-export const updateText = (lines: string[]): string => `${lines.join('\n')}\n${ASK_SIGNATURE}`
+export const updateText = (lines: string[]): string => `${lines.join('\n')}${OWN_MARKER}`
 
 type Member = { id?: number | string; username?: string; email?: string }
 type Created = { id?: number | string; date?: number | string | null }
@@ -178,8 +178,9 @@ type CommentList = { comments?: RawComment[] }
 export type SourceReply = { id: string; author: string; text: string; images: SavedImage[] }
 
 export function isOwnComment(text: string): boolean {
-  const signature = text.split('\n').map((line) => line.trim()).filter((line) => line !== '').at(-1)
-  return signature === ASK_SIGNATURE || signature === LEGACY_ASK_SIGNATURE
+  if (text.trim().endsWith(OWN_MARKER)) return true
+  const lastLine = text.split('\n').map((line) => line.trim()).filter((line) => line !== '').at(-1)
+  return lastLine !== undefined && LEGACY_SIGNATURES.includes(lastLine)
 }
 
 function toReply(raw: RawComment, links: string[], downloaded: DownloadedImage[]): SourceReply {

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { createClickUp } from '../src/clickup-api'
 import { createDeadline } from '../src/deadline'
 import { REPLY_IMAGE_TTL_MS } from '../src/reply-images'
-import { askText, isTaskId, sourceItem, sourcePost, sourceReplies, updateText } from '../src/source'
+import { ASK_HEADER, OWN_MARKER, askText, isTaskId, sourceItem, sourcePost, sourceReplies, updateText } from '../src/source'
 import { drain, fakeClock, settle, type FakeClock } from './helpers/fake-clock'
 import { fakeClickUp, type Responder } from './helpers/fake-clickup'
 import { fakeImages, type ImageReply } from './helpers/fake-images'
@@ -26,7 +26,7 @@ function setup(respond: Responder) {
 describe('askText', () => {
   test('askText numbers the questions in Thai and ends with the marker', () => {
     expect(askText(['หน้าไหนครับ', 'Thai or English?'])).toBe(
-      'ขอถามเพิ่มเติมก่อนเริ่มงานนี้นิดนึงครับ\n\n1. หน้าไหนครับ\n2. Thai or English?\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ\n— Shikidan',
+      'ขอถามเพิ่มเติมก่อนเริ่มงานนี้นิดนึงครับ\n\n1. หน้าไหนครับ\n2. Thai or English?\n\nตอบใต้คอมเมนต์นี้หรือคอมเมนต์ใหม่ได้เลยครับ' + OWN_MARKER,
     )
   })
 })
@@ -192,7 +192,7 @@ describe('sourcePost update', () => {
     const { run, fake } = updateSetup()
     expect(await run({})).toEqual({ commentId: '1700000000000' })
     expect(fake.calls).toHaveLength(1)
-    expect(fake.calls[0].body).toEqual({ comment_text: 'Fixed it.\nCheck please\n— Shikidan' })
+    expect(fake.calls[0].body).toEqual({ comment_text: 'Fixed it.\nCheck please' + OWN_MARKER })
   })
 
   test('refuses empty lines and a bad id without calling ClickUp', async () => {
@@ -205,7 +205,7 @@ describe('sourcePost update', () => {
   test('a numeric mention becomes a tag item then a text item with a leading space and the marker', async () => {
     const { run, fake, methodsOf } = updateSetup()
     expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000' })
-    expect(fake.calls[0].body).toEqual({ comment: [{ type: 'tag', user: { id: 42 } }, { text: ' Fixed it.\nCheck please\n— Shikidan' }] })
+    expect(fake.calls[0].body).toEqual({ comment: [{ type: 'tag', user: { id: 42 } }, { text: ' Fixed it.\nCheck please' + OWN_MARKER }] })
     expect(methodsOf()).toEqual(['POST /task/t1/comment', 'GET /task/t1/comment'])
   })
 
@@ -224,7 +224,7 @@ describe('sourcePost update', () => {
     const { run, fake, methodsOf } = updateSetup()
     expect(await run({ mention })).toEqual({ commentId: '1700000000000', warning: `Mention not resolved: Could not find one ClickUp user for "${mention}"` })
     expect(methodsOf().filter((call) => call.startsWith('POST'))).toEqual(['POST /task/t1/comment'])
-    expect(fake.calls.find((call) => call.method === 'POST')!.body).toEqual({ comment_text: `@${mention}\nFixed it.\nCheck please\n— Shikidan` })
+    expect(fake.calls.find((call) => call.method === 'POST')!.body).toEqual({ comment_text: `@${mention}\nFixed it.\nCheck please${OWN_MARKER}` })
   })
 
   test('a username prefix shorter than 3 characters is not used', async () => {
@@ -238,7 +238,7 @@ describe('sourcePost update', () => {
     expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not resolved: ClickUp returned 500' })
     const posts = fake.calls.filter((call) => call.method === 'POST')
     expect(posts).toHaveLength(2)
-    expect(posts[1]!.body).toEqual({ comment_text: '@42\nFixed it.\nCheck please\n— Shikidan' })
+    expect(posts[1]!.body).toEqual({ comment_text: '@42\nFixed it.\nCheck please' + OWN_MARKER })
   })
 
   test('a failing member lookup falls back to the plain comment', async () => {
@@ -256,7 +256,7 @@ describe('sourcePost update', () => {
     const { run, fake, methodsOf } = updateSetup({ keepTag: [false, false] })
     expect(await run({ mention: '42' })).toEqual({ commentId: '1700000000000', warning: 'Mention not resolved: ClickUp did not keep the mention' })
     expect(methodsOf()).toEqual(['POST /task/t1/comment', 'GET /task/t1/comment', 'DELETE /comment/9000', 'POST /task/t1/comment', 'GET /task/t1/comment', 'DELETE /comment/9001', 'POST /task/t1/comment'])
-    expect(fake.calls.at(-1)!.body).toEqual({ comment_text: '@42\nFixed it.\nCheck please\n— Shikidan' })
+    expect(fake.calls.at(-1)!.body).toEqual({ comment_text: '@42\nFixed it.\nCheck please' + OWN_MARKER })
   })
 
   test('still posts the plain comment when deleting the second lost comment fails', async () => {
@@ -440,14 +440,42 @@ describe('sourceReplies own-ask detection', () => {
   })
 
   test('still skips an ask posted with the legacy Mission Control signature', async () => {
-    const legacyAsk = ask.replace('\n— Shikidan', '\n— Mission Control')
+    const legacyAsk = `${ASK_HEADER}\n\n1. q\n— Mission Control`
     const { clock, api, deadline, store } = repliesSetup([comment('7', 700, legacyAsk)])
     const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
     expect(result).toEqual({ replies: [], lastId: '700' })
   })
 
+  test('an ask shows no signature', () => {
+    expect(ask).not.toMatch(/Shikidan|Mission Control/)
+    expect(ask.endsWith(OWN_MARKER)).toBe(true)
+  })
+
+  test('an update shows no signature', () => {
+    expect(updateText(['a', 'b'])).toBe(`a\nb${OWN_MARKER}`)
+  })
+
+  test('a mention fallback comment is not read back as a reply', async () => {
+    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, `@someone\n${updateText(['Fixed it.'])}`)])
+    const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
+    expect(result.replies).toEqual([])
+  })
+
+  test('a quoted update with an answer below is a reply', async () => {
+    const quoted = `${updateText(['Fixed it.'])}\n\nใช่ครับ`
+    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, quoted)])
+    const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
+    expect(result.replies.map((reply) => reply.text)).toEqual([quoted])
+  })
+
+  test('an old signed comment is still skipped', async () => {
+    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, 'old\n— Shikidan')])
+    const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
+    expect(result).toEqual({ replies: [], lastId: '700' })
+  })
+
   test('skips the ask even with blank lines and spaces around it', async () => {
-    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, `\n  ${ask.replace('\n— Shikidan', '\n  — Shikidan  ')}\n\n`)])
+    const { clock, api, deadline, store } = repliesSetup([comment('7', 700, `\n  ${ASK_HEADER}\n\n1. q\n  — Shikidan  \n\n`)])
     const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
     expect(result).toEqual({ replies: [], lastId: '700' })
   })
