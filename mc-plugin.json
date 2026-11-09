@@ -1,7 +1,7 @@
 {
   "id": "clickup-board",
   "name": "ClickUp board",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "See a ClickUp board and start a chat or terminal on any task.",
   "pluginApi": 1,
   "runtime": "isolated",

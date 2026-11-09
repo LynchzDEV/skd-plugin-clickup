@@ -20,6 +20,14 @@ The board refreshes when you open it or click Refresh. Nothing polls in the back
 
 `source.post` posts the questions Shikidan asks (`kind: 'ask'`) and update comments (`kind: 'update'`). An update is the given lines with an invisible marker at the end, which keeps it out of replies; comments signed by an older version are still recognised. It can carry `mention` (a ClickUp user id, or an exact username, exact email or unique username prefix on the task's list) as a real @mention (prefixes need 3+ characters), and `status` (a status of the task's list), and returns `{ commentId, status, warning }`. Once the comment exists the call never throws: a mention that cannot be resolved or kept becomes one plain `@name` comment, and anything that did not happen is described in `warning`.
 
+An ask (`kind: 'ask'`) can also carry `mention` and `assignee`, both numeric ClickUp user ids. `mention` tags that person at the start of the ask with the same read-back check as an update, `assignee` assigns the comment to them, and every ask notifies everyone. Both calls return `ref`, the id of the comment that was created.
+
+`source.people` takes `{ id }` and returns `{ creator, assignees, me }`. Each person is `{ id, username }`, `creator` is null when ClickUp has none, and `me` is the owner of the token.
+
+`source.resolve` takes `{ id, ref }` and marks comment `ref` resolved. It re-sends the comment's own structured parts and assignee so the @tag survives, and it throws when the comment is missing or ClickUp refuses.
+
+`source.replies` gives each reply an `authorId` (empty when ClickUp sends none) and reads the ten newest threaded comments.
+
 `source.status` sets a task's status and nothing else: no comment, no assignee change. It takes `{ id, status }`, matches the status against the task's list case-insensitively, reads the task back, and returns `{ status }`. Unlike `source.post`, it throws when the status is unknown or not confirmed.
 
 ## Limits
