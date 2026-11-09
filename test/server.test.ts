@@ -459,7 +459,7 @@ describe('source methods', () => {
     const { methods, ctx, clock } = tokened(({ path, method }) =>
       method === 'POST' && path === '/task/t1/comment' ? { body: { id: 'c', date: 1700 } } : { status: 404, body: {} },
     )
-    expect(await call(clock, methods['source.post']({ id: 't1', kind: 'ask', lines: ['Which page?'] }, ctx))).toEqual({ commentId: '1700' })
+    expect(await call(clock, methods['source.post']({ id: 't1', kind: 'ask', lines: ['Which page?'] }, ctx))).toEqual({ commentId: '1700', ref: 'c' })
   })
 
   test('source.post sends an update and returns the comment cursor', async () => {

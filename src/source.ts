@@ -40,10 +40,10 @@ export async function sourceItem(api: ClickUp, id: string, deadline: Deadline, c
   return { title: (body.name?.trim() || task).slice(0, MAX_TITLE), url, contextMarkdown: dossier.markdown, images: dossier.images }
 }
 
-type AskInput = { id: string; kind: 'ask'; lines: string[] }
+type AskInput = { id: string; kind: 'ask'; lines: string[]; mention?: string; assignee?: string }
 type UpdateInput = { id: string; kind: 'update'; lines: string[]; mention?: string; status?: string }
 export type PostInput = AskInput | UpdateInput
-export type PostResult = { commentId: string; status?: string; warning?: string }
+export type PostResult = { commentId: string; ref?: string; status?: string; warning?: string }
 
 const cleanLines = (lines: unknown): string[] =>
   (Array.isArray(lines) ? lines : []).filter((line): line is string => typeof line === 'string' && line.trim() !== '')
@@ -55,8 +55,22 @@ export async function sourcePost(api: ClickUp, input: PostInput, deadline: Deadl
   const lines = cleanLines(input.lines)
   if (input.kind === 'update') return postUpdate(api, task, { ...input, lines }, deadline, now)
   if (lines.length === 0) throw new Error('Nothing to ask')
-  const body = (await api.post(`/task/${task}/comment`, { comment_text: askText(lines), notify_all: true }, deadline)) as { date?: number | string }
-  return { commentId: cursorOf(body, now) }
+  return postAsk(api, task, lines, { mention: userIdOf(input.mention, 'mention'), assignee: userIdOf(input.assignee, 'assignee') }, deadline, now)
+}
+
+function userIdOf(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw new Error(`The ${field} must be a ClickUp user id`)
+  return value
+}
+
+async function postAsk(api: ClickUp, task: string, lines: string[], who: { mention?: string; assignee?: string }, deadline: Deadline, now: number): Promise<PostResult> {
+  const extra = { notify_all: true, ...(who.assignee === undefined ? {} : { assignee: Number(who.assignee) }) }
+  const text = who.mention === undefined ? askText(lines) : updateText(lines)
+  const { created, warning } = who.mention === undefined
+    ? { created: (await api.post(`/task/${task}/comment`, { comment_text: text, ...extra }, deadline)) as Created, warning: undefined }
+    : await postWithMention(api, task, who.mention, async () => who.mention!, text, deadline, extra)
+  return { commentId: cursorOf(created, now), ...(created.id == null ? {} : { ref: String(created.id) }), ...(warning === undefined ? {} : { warning }) }
 }
 
 export const updateText = (lines: string[]): string => `${lines.join('\n')}${OWN_MARKER}`
@@ -99,9 +113,9 @@ type Posted = { created: Created; warning?: string }
 
 const reasonOf = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
-async function postWithMention(api: ClickUp, task: string, mention: string, resolveUser: () => Promise<string>, text: string, deadline: Deadline): Promise<Posted> {
+async function postWithMention(api: ClickUp, task: string, mention: string, resolveUser: () => Promise<string>, text: string, deadline: Deadline, extra: Record<string, unknown> = {}): Promise<Posted> {
   const postPlain = async (reason: string): Promise<Posted> => ({
-    created: (await api.post(`/task/${task}/comment`, { comment_text: `@${mention.trim()}\n${text}` }, deadline)) as Created,
+    created: (await api.post(`/task/${task}/comment`, { comment_text: `@${mention.trim()}\n${text}`, ...extra }, deadline)) as Created,
     warning: `Mention not resolved: ${reason}`,
   })
   let userId: string
@@ -114,7 +128,7 @@ async function postWithMention(api: ClickUp, task: string, mention: string, reso
   for (const attempt of [1, 2]) {
     let created: Created
     try {
-      created = (await api.post(`/task/${task}/comment`, { comment }, deadline)) as Created
+      created = (await api.post(`/task/${task}/comment`, { comment, ...extra }, deadline)) as Created
     } catch (error) {
       if (error instanceof ApiError) return postPlain(reasonOf(error))
       throw error

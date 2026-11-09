@@ -119,7 +119,7 @@ describe('sourcePost', () => {
         : { status: 404, body: {} },
     )
     const result = await settle(clock, sourcePost(api, { id: 't1', kind: 'ask', lines: ['Which page?'] }, deadline, 1234))
-    expect(result).toEqual({ commentId: '1700000000000' })
+    expect(result).toEqual({ commentId: '1700000000000', ref: '9001' })
     expect(fake.calls).toHaveLength(1)
     expect(fake.calls[0].method).toBe('POST')
     expect(fake.calls[0].body).toEqual({ comment_text: askText(['Which page?']), notify_all: true })
@@ -130,7 +130,7 @@ describe('sourcePost', () => {
       method === 'POST' ? { body: { id: '9001' } } : { status: 404, body: {} },
     )
     const result = await settle(clock, sourcePost(api, { id: 't1', kind: 'ask', lines: ['q'] }, deadline, 1234))
-    expect(result).toEqual({ commentId: '1234' })
+    expect(result).toEqual({ commentId: '1234', ref: '9001' })
   })
 
   test('sourcePost treats a null date like a missing one', async () => {
@@ -138,7 +138,57 @@ describe('sourcePost', () => {
       method === 'POST' ? { body: { id: '9001', date: null } } : { status: 404, body: {} },
     )
     const result = await settle(clock, sourcePost(api, { id: 't1', kind: 'ask', lines: ['q'] }, deadline, 1234))
-    expect(result).toEqual({ commentId: '1234' })
+    expect(result).toEqual({ commentId: '1234', ref: '9001' })
+  })
+
+  test('an ask with a mention is sent as a tag then its lines as written, with no question header, notifies everyone, and returns the comment id as ref', async () => {
+    const posted: Array<{ id: string; userId: number }> = []
+    const { clock, api, deadline, fake } = setup(({ path, method, body }) => {
+      if (method === 'POST' && path === '/task/t1/comment') {
+        const parts = (body as { comment: Array<{ user?: { id: number } }> }).comment
+        posted.push({ id: '9001', userId: parts[0]!.user!.id })
+        return { body: { id: '9001', date: 1700000000000 } }
+      }
+      if (method === 'GET' && path === '/task/t1/comment') return { body: { comments: [{ id: '9001', comment: [{ type: 'tag', user: { id: 42 } }, { text: ' x' }] }] } }
+      return { status: 404, body: {} }
+    })
+    const result = await settle(clock, sourcePost(api, { id: 't1', kind: 'ask', lines: ['Which?'], mention: '42' }, deadline, 1234))
+    expect(result).toEqual({ commentId: '1700000000000', ref: '9001' })
+    expect(fake.calls[0].body).toEqual({ comment: [{ type: 'tag', user: { id: 42 } }, { text: ' ' + updateText(['Which?']) }], notify_all: true })
+    expect(fake.calls.map((call) => `${call.method} ${call.path}`)).toEqual(['POST /task/t1/comment', 'GET /task/t1/comment'])
+  })
+
+  test('an ask whose tag ClickUp flattens is retried like an update and reports the warning', async () => {
+    const { clock, api, deadline, fake } = setup(({ path, method }) => {
+      if (method === 'POST' && path === '/task/t1/comment') return { body: { id: '9001', date: 1700000000000 } }
+      if (method === 'GET' && path === '/task/t1/comment') return { body: { comments: [{ id: '9001', comment: [{ text: '@42' }] }] } }
+      return { body: {} }
+    })
+    const result = await settle(clock, sourcePost(api, { id: 't1', kind: 'ask', lines: ['Which?'], mention: '42' }, deadline, 1234))
+    expect(result.warning).toBe('Mention not resolved: ClickUp did not keep the mention')
+    expect(result.ref).toBe('9001')
+    expect(fake.calls.at(-1)!.body).toEqual({ comment_text: `@42\n${updateText(['Which?'])}`, notify_all: true })
+  })
+
+  test('an ask with an assignee sends it as a number', async () => {
+    const { clock, api, deadline, fake } = setup(() => ({ body: { id: '9001', date: 1700000000000 } }))
+    await settle(clock, sourcePost(api, { id: 't1', kind: 'ask', lines: ['Which?'], assignee: '77' }, deadline, 1234))
+    expect(fake.calls).toHaveLength(1)
+    expect(fake.calls[0].body).toEqual({ comment_text: askText(['Which?']), notify_all: true, assignee: 77 })
+  })
+
+  test('an ask with a mention and an assignee carries both on the tag comment', async () => {
+    const { clock, api, deadline, fake } = setup(({ method }) =>
+      method === 'POST' ? { body: { id: '9001', date: 1700000000000 } } : { body: { comments: [{ id: '9001', comment: [{ type: 'tag', user: { id: 42 } }] }] } },
+    )
+    await settle(clock, sourcePost(api, { id: 't1', kind: 'ask', lines: ['Which?'], mention: '42', assignee: '42' }, deadline, 1234))
+    expect(fake.calls[0].body).toEqual({ comment: [{ type: 'tag', user: { id: 42 } }, { text: ' ' + updateText(['Which?']) }], notify_all: true, assignee: 42 })
+  })
+
+  test.each([['mention', '4x2'], ['mention', 'ploy'], ['assignee', ''], ['assignee', '-1']])('an ask refuses a non-numeric %s "%s" before any request', async (field, value) => {
+    const { api, deadline, fake } = setup(() => ({ body: {} }))
+    await expect(sourcePost(api, { id: 't1', kind: 'ask', lines: ['q'], [field]: value } as never, deadline, 1)).rejects.toThrow(`The ${field} must be a ClickUp user id`)
+    expect(fake.calls).toHaveLength(0)
   })
 
   test('sourcePost refuses an empty question list and a bad id', async () => {
