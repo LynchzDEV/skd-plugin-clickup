@@ -26,6 +26,8 @@ An ask (`kind: 'ask'`) can also carry `mention` and `assignee`, both numeric Cli
 
 `source.resolve` takes `{ id, ref }` and marks comment `ref` resolved. It re-sends the comment's own structured parts and assignee so the @tag survives, and it throws when the comment is missing or ClickUp refuses.
 
+`source.reply` takes `{ id, ref, lines }` and posts the lines as a reply inside the thread of comment `ref` (digits only), ending with the same invisible marker as an update so `source.replies` never reads it back as the owner's answer. It returns `{ commentId }`, the new reply's cursor, and throws on a bad `ref` or empty `lines`.
+
 `source.replies` gives each reply an `authorId` (empty when ClickUp sends none) and reads the ten newest threaded comments.
 
 `source.status` sets a task's status and nothing else: no comment, no assignee change. It takes `{ id, status }`, matches the status against the task's list case-insensitively, reads the task back, and returns `{ status }`. Unlike `source.post`, it throws when the status is unknown or not confirmed.

@@ -469,6 +469,14 @@ describe('source methods', () => {
     expect(await call(clock, methods['source.post']({ id: 't1', kind: 'update', lines: ['Done.'] }, ctx))).toEqual({ commentId: '1700' })
   })
 
+  test('source.reply posts inside the thread and returns the cursor', async () => {
+    const { methods, ctx, clock } = tokened(({ path, method }) =>
+      method === 'POST' && path === '/comment/9/reply' ? { body: { id: 'r', date: 1800 } } : { status: 404, body: {} },
+    )
+    expect(await call(clock, methods['source.reply']({ id: 't1', ref: '9', lines: ['Hi'] }, ctx))).toEqual({ commentId: '1800' })
+    await expect(methods['source.reply']({ id: 't1', ref: '9', lines: ['Hi'] }, makeCtx({}).ctx)).rejects.toThrow('Connect ClickUp first')
+  })
+
   test('source.status sets only the status on ClickUp', async () => {
     const { methods, ctx, clock, fake } = tokened(({ path, method }) => {
       if (method === 'GET' && path === '/task/t1') return { body: { id: 't1', list: { id: 'L1' }, status: { status: 'Done' } } }

@@ -284,3 +284,12 @@ export async function sourceResolve(api: ClickUp, input: { id: string; ref: stri
   const assignee = original.assignee?.id
   await api.put(`/comment/${input.ref}`, { comment: original.comment, ...(assignee == null ? {} : { assignee: Number(assignee) }), resolved: true }, deadline)
 }
+
+export async function sourceReply(api: ClickUp, input: { id: string; ref: string; lines: string[] }, deadline: Deadline, now: number): Promise<{ commentId: string }> {
+  taskId(input.id)
+  if (typeof input.ref !== 'string' || !/^\d+$/.test(input.ref)) throw new Error('Not a ClickUp comment id')
+  const lines = cleanLines(input.lines)
+  if (lines.length === 0) throw new Error('Nothing to say')
+  const created = (await api.post(`/comment/${input.ref}/reply`, { comment_text: updateText(lines), notify_all: true }, deadline)) as Created
+  return { commentId: cursorOf(created, now) }
+}

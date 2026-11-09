@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { createClickUp } from '../src/clickup-api'
 import { createDeadline } from '../src/deadline'
 import { REPLY_IMAGE_TTL_MS } from '../src/reply-images'
-import { ASK_HEADER, OWN_MARKER, askText, isTaskId, sourceItem, sourcePost, sourceStatus, sourceReplies, sourcePeople, sourceResolve, updateText } from '../src/source'
+import { ASK_HEADER, OWN_MARKER, askText, isTaskId, sourceItem, sourcePost, sourceStatus, sourceReplies, sourcePeople, sourceResolve, sourceReply, updateText } from '../src/source'
 import { drain, fakeClock, settle, type FakeClock } from './helpers/fake-clock'
 import { fakeClickUp, type Responder } from './helpers/fake-clickup'
 import { fakeImages, type ImageReply } from './helpers/fake-images'
@@ -421,6 +421,31 @@ describe('sourceResolve', () => {
   })
 })
 
+describe('sourceReply', () => {
+  const replySetup = () =>
+    setup(({ path, method }) => (method === 'POST' && path === '/comment/9001/reply' ? { body: { id: 77, date: '1700' } } : { status: 404, body: {} }))
+
+  test('posts an own-marked notifying reply inside the thread and returns its cursor', async () => {
+    const { clock, api, deadline, fake } = replySetup()
+    expect(await settle(clock, sourceReply(api, { id: 't1', ref: '9001', lines: ['Done.', ' ', 'Next'] }, deadline, 5))).toEqual({ commentId: '1700' })
+    expect(fake.calls).toHaveLength(1)
+    expect(fake.calls[0]!.body).toEqual({ comment_text: `Done.\nNext${OWN_MARKER}`, notify_all: true })
+  })
+
+  test('falls back to now when ClickUp sends no date', async () => {
+    const { clock, api, deadline } = setup(() => ({ body: { id: 77 } }))
+    expect(await settle(clock, sourceReply(api, { id: 't1', ref: '9001', lines: ['x'] }, deadline, 5))).toEqual({ commentId: '5' })
+  })
+
+  test('rejects a bad ref, a bad id and empty lines without calling the API', async () => {
+    const { api, deadline, fake } = replySetup()
+    await expect(sourceReply(api, { id: 't1', ref: '../x', lines: ['x'] }, deadline, 5)).rejects.toThrow('Not a ClickUp comment id')
+    await expect(sourceReply(api, { id: 'a/b', ref: '9001', lines: ['x'] }, deadline, 5)).rejects.toThrow('Not a ClickUp task id')
+    await expect(sourceReply(api, { id: 't1', ref: '9001', lines: [' ', ''] }, deadline, 5)).rejects.toThrow('Nothing to say')
+    expect(fake.calls).toHaveLength(0)
+  })
+})
+
 const comment = (id: string, date: number, text: string, extra: Record<string, unknown> = {}) => ({ id, date: String(date), comment_text: text, user: { username: 'Ploy' }, reply_count: 0, ...extra })
 
 function repliesSetup(top: unknown[], threads: Record<string, unknown[]> = {}, image: (url: string) => ImageReply = () => ({ status: 404 })) {
@@ -460,6 +485,15 @@ describe('sourceReplies', () => {
     const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: '400' }, deadline, store))
     expect(result.replies.map((reply) => reply.text)).toEqual(['หน้า login ครับ'])
     expect(result.lastId).toBe('500')
+  })
+
+  test('does not read back its own thread reply but still returns the owner reply beside it', async () => {
+    const own = comment('6', 600, updateText(['Shikidan reply']))
+    const owner = comment('7', 700, 'owner answer')
+    const { clock, api, deadline, store } = repliesSetup([comment('4', 400, 'q', { reply_count: 2 })], { '4': [own, owner] })
+    const result = await settle(clock, sourceReplies(api, { id: 't1', sinceId: '400' }, deadline, store))
+    expect(result.replies.map((reply) => reply.text)).toEqual(['owner answer'])
+    expect(result.lastId).toBe('700')
   })
 
   test('keeps the cursor when nothing is newer', async () => {
