@@ -202,7 +202,7 @@ async function postUpdate(api: ClickUp, task: string, input: Omit<UpdateInput, '
   return { commentId: cursorOf(created, now), ...(applied.status === undefined ? {} : { status: applied.status }), ...(warning === '' ? {} : { warning }) }
 }
 
-type RawComment = { id?: string | number; date?: string | number; comment_text?: string; user?: { username?: string }; reply_count?: number | string; comment?: unknown }
+type RawComment = { id?: string | number; date?: string | number; comment_text?: string; user?: { username?: string }; reply_count?: number | string; comment?: unknown; assignee?: { id?: number | string } }
 type CommentList = { comments?: RawComment[] }
 export type SourceReply = { id: string; author: string; text: string; images: SavedImage[] }
 
@@ -259,4 +259,27 @@ export async function sourceReplies(api: ClickUp, input: { id: string; sinceId: 
   )
   await pruned
   return { replies, lastId: newest > since ? String(newest) : input.sinceId }
+}
+
+export type Person = { id: string; username: string }
+type RawPerson = { id?: number | string; username?: string }
+const personOf = (raw: RawPerson): Person => ({ id: String(raw.id), username: raw.username ?? '' })
+const hasId = (raw: RawPerson | undefined | null): raw is RawPerson => raw?.id != null
+
+export async function sourcePeople(api: ClickUp, input: { id: string }, deadline: Deadline): Promise<{ creator: Person | null; assignees: Person[]; me: Person }> {
+  const task = taskId(input.id)
+  const body = (await api.get(`/task/${task}`, deadline)) as { creator?: RawPerson; assignees?: RawPerson[] }
+  const me = ((await api.get('/user', deadline)) as { user?: RawPerson }).user
+  if (!hasId(me)) throw new Error('Could not read the ClickUp user')
+  return { creator: hasId(body.creator) ? personOf(body.creator) : null, assignees: (body.assignees ?? []).filter(hasId).map(personOf), me: personOf(me) }
+}
+
+export async function sourceResolve(api: ClickUp, input: { id: string; ref: string }, deadline: Deadline): Promise<void> {
+  const task = taskId(input.id)
+  if (typeof input.ref !== 'string' || !/^\d+$/.test(input.ref)) throw new Error('Not a ClickUp comment id')
+  const comments = ((await api.get(`/task/${task}/comment`, deadline)) as CommentList).comments ?? []
+  const original = comments.find((raw) => String(raw.id) === input.ref)
+  if (original === undefined) throw new Error(`Comment ${input.ref} not found`)
+  const assignee = original.assignee?.id
+  await api.put(`/comment/${input.ref}`, { comment: original.comment, ...(assignee == null ? {} : { assignee: Number(assignee) }), resolved: true }, deadline)
 }

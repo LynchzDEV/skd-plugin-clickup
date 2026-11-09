@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { createClickUp } from '../src/clickup-api'
 import { createDeadline } from '../src/deadline'
 import { REPLY_IMAGE_TTL_MS } from '../src/reply-images'
-import { ASK_HEADER, OWN_MARKER, askText, isTaskId, sourceItem, sourcePost, sourceStatus, sourceReplies, updateText } from '../src/source'
+import { ASK_HEADER, OWN_MARKER, askText, isTaskId, sourceItem, sourcePost, sourceStatus, sourceReplies, sourcePeople, sourceResolve, updateText } from '../src/source'
 import { drain, fakeClock, settle, type FakeClock } from './helpers/fake-clock'
 import { fakeClickUp, type Responder } from './helpers/fake-clickup'
 import { fakeImages, type ImageReply } from './helpers/fake-images'
@@ -355,6 +355,69 @@ describe('sourcePost update', () => {
     const { run, methodsOf } = updateSetup()
     await expect(run({ status: 'Shipped', mention: '42' })).rejects.toThrow('This list has no status "Shipped"')
     expect(methodsOf()).toEqual(['GET /task/t1', 'GET /list/L1'])
+  })
+})
+
+describe('sourcePeople', () => {
+  const task = { id: 't1', creator: { id: 5, username: 'Creator', email: 'c@x.co' }, assignees: [{ id: 6, username: 'Owner' }, { id: 7, username: 'Second' }] }
+  const respond = (body: unknown) => ({ path }: { path: string }) =>
+    path === '/task/t1' ? { body } : path === '/user' ? { body: { user: { id: 101, username: 'Palm' } } } : { status: 404, body: {} }
+
+  test('returns the creator, the assignees and the token owner with string ids', async () => {
+    const { clock, api, deadline } = setup(respond(task))
+    expect(await settle(clock, sourcePeople(api, { id: 't1' }, deadline))).toEqual({
+      creator: { id: '5', username: 'Creator' },
+      assignees: [{ id: '6', username: 'Owner' }, { id: '7', username: 'Second' }],
+      me: { id: '101', username: 'Palm' },
+    })
+  })
+
+  test('a task with no creator and no assignees gives null and an empty list', async () => {
+    const { clock, api, deadline } = setup(respond({ id: 't1' }))
+    expect(await settle(clock, sourcePeople(api, { id: 't1' }, deadline))).toEqual({ creator: null, assignees: [], me: { id: '101', username: 'Palm' } })
+  })
+
+  test('throws when ClickUp does not say who the token owner is, and refuses a bad id before any request', async () => {
+    const { clock, api, deadline, fake } = setup(({ path }) => (path === '/task/t1' ? { body: task } : { body: {} }))
+    await expect(settle(clock, sourcePeople(api, { id: 't1' }, deadline))).rejects.toThrow('Could not read the ClickUp user')
+    const before = fake.calls.length
+    await expect(sourcePeople(api, { id: 'a/b' }, deadline)).rejects.toThrow('Not a ClickUp task id')
+    expect(fake.calls).toHaveLength(before)
+  })
+})
+
+describe('sourceResolve', () => {
+  const parts = [{ type: 'tag', user: { id: 42 } }, { text: ' ask text' }]
+  const resolveSetup = (comments: unknown[], putStatus = 200) =>
+    setup(({ path, method }) => {
+      if (method === 'GET' && path === '/task/t1/comment') return { body: { comments } }
+      if (method === 'PUT' && path === '/comment/9001') return { status: putStatus, body: {} }
+      return { status: 404, body: {} }
+    })
+
+  test('resolves the comment re-sending its tag parts and its assignee', async () => {
+    const { clock, api, deadline, fake } = resolveSetup([{ id: 8000, comment: [{ text: 'other' }] }, { id: 9001, comment: parts, assignee: { id: 42 } }])
+    await settle(clock, sourceResolve(api, { id: 't1', ref: '9001' }, deadline))
+    const put = fake.calls.filter((call) => call.method === 'PUT')
+    expect(put).toHaveLength(1)
+    expect(put[0]!.body).toEqual({ comment: parts, assignee: 42, resolved: true })
+  })
+
+  test('sends no assignee when the comment has none', async () => {
+    const { clock, api, deadline, fake } = resolveSetup([{ id: 9001, comment: parts }])
+    await settle(clock, sourceResolve(api, { id: 't1', ref: '9001' }, deadline))
+    expect(fake.calls.find((call) => call.method === 'PUT')!.body).toEqual({ comment: parts, resolved: true })
+  })
+
+  test('throws when the comment is gone, when ClickUp refuses, and on a bad ref or id', async () => {
+    const gone = resolveSetup([{ id: 1, comment: parts }])
+    await expect(settle(gone.clock, sourceResolve(gone.api, { id: 't1', ref: '9001' }, gone.deadline))).rejects.toThrow('Comment 9001 not found')
+    const refused = resolveSetup([{ id: 9001, comment: parts }], 500)
+    await expect(settle(refused.clock, sourceResolve(refused.api, { id: 't1', ref: '9001' }, refused.deadline))).rejects.toThrow()
+    const { api, deadline, fake } = resolveSetup([])
+    await expect(sourceResolve(api, { id: 't1', ref: '../x' }, deadline)).rejects.toThrow('Not a ClickUp comment id')
+    await expect(sourceResolve(api, { id: 'a/b', ref: '9001' }, deadline)).rejects.toThrow('Not a ClickUp task id')
+    expect(fake.calls).toHaveLength(0)
   })
 })
 

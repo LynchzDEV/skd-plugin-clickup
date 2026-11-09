@@ -489,6 +489,25 @@ describe('source methods', () => {
     await expect(methods['source.status']({ id: 't1', status: 'Done' }, bare)).rejects.toThrow('Connect ClickUp first')
   })
 
+  test('source.people and source.resolve go through to ClickUp', async () => {
+    const { methods, ctx, clock, fake } = tokened(({ path, method }) => {
+      if (method === 'GET' && path === '/task/t1') return { body: { id: 't1', creator: { id: 5, username: 'C' }, assignees: [] } }
+      if (method === 'GET' && path === '/user') return { body: { user: { id: 101, username: 'Palm' } } }
+      if (method === 'GET' && path === '/task/t1/comment') return { body: { comments: [{ id: '9', comment: [{ text: 'q' }] }] } }
+      return method === 'PUT' && path === '/comment/9' ? { body: {} } : { status: 404, body: {} }
+    })
+    expect(await call(clock, methods['source.people']({ id: 't1' }, ctx))).toEqual({ creator: { id: '5', username: 'C' }, assignees: [], me: { id: '101', username: 'Palm' } })
+    await call(clock, methods['source.resolve']({ id: 't1', ref: '9' }, ctx))
+    expect(fake.calls.find((c) => c.method === 'PUT')!.body).toEqual({ comment: [{ text: 'q' }], resolved: true })
+  })
+
+  test('source.people and source.resolve need a token', async () => {
+    const { methods } = makePlugin(() => ({ body: {} }))
+    const { ctx } = makeCtx({})
+    await expect(methods['source.people']({ id: 't1' }, ctx)).rejects.toThrow('Connect ClickUp first')
+    await expect(methods['source.resolve']({ id: 't1', ref: '9' }, ctx)).rejects.toThrow('Connect ClickUp first')
+  })
+
   test('source.item and source.replies go through to ClickUp', async () => {
     const { methods, ctx, clock } = tokened(({ path }) => {
       if (path === '/task/t1') return { body: { id: 't1', name: 'Login copy' } }
