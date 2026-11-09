@@ -517,6 +517,6 @@ describe('source methods', () => {
     const item = await call(clock, methods['source.item']({ id: 't1' }, ctx))
     expect(item.title).toBe('Login copy')
     const replies = await call(clock, methods['source.replies']({ id: 't1', sinceId: '100' }, ctx))
-    expect(replies).toEqual({ replies: [{ id: '2', author: 'Ploy', text: 'ok', images: [] }], lastId: '200' })
+    expect(replies).toEqual({ replies: [{ id: '2', author: 'Ploy', text: 'ok', images: [], authorId: '' }], lastId: '200' })
   })
 })

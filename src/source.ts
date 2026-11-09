@@ -202,9 +202,9 @@ async function postUpdate(api: ClickUp, task: string, input: Omit<UpdateInput, '
   return { commentId: cursorOf(created, now), ...(applied.status === undefined ? {} : { status: applied.status }), ...(warning === '' ? {} : { warning }) }
 }
 
-type RawComment = { id?: string | number; date?: string | number; comment_text?: string; user?: { username?: string }; reply_count?: number | string; comment?: unknown; assignee?: { id?: number | string } }
+type RawComment = { id?: string | number; date?: string | number; comment_text?: string; user?: { id?: number | string; username?: string }; reply_count?: number | string; comment?: unknown; assignee?: { id?: number | string } }
 type CommentList = { comments?: RawComment[] }
-export type SourceReply = { id: string; author: string; text: string; images: SavedImage[] }
+export type SourceReply = { id: string; author: string; authorId: string; text: string; images: SavedImage[] }
 
 export function isOwnComment(text: string): boolean {
   if (text.trim().endsWith(OWN_MARKER)) return true
@@ -219,6 +219,7 @@ function toReply(raw: RawComment, links: string[], downloaded: DownloadedImage[]
   return {
     id: String(raw.id).slice(0, MAX_REPLY_ID),
     author: (raw.user?.username ?? 'someone').slice(0, MAX_AUTHOR),
+    authorId: String(raw.user?.id ?? ''),
     text: text.slice(0, MAX_REPLY_TEXT),
     images: downloaded.map((item) => item.image),
   }
@@ -244,7 +245,7 @@ export async function sourceReplies(api: ClickUp, input: { id: string; sinceId: 
   const pruned = pruneReplyImages(images)
   const since = Number(input.sinceId ?? 0)
   const top = ((await api.get(`/task/${task}/comment`, deadline)) as CommentList).comments ?? []
-  const threaded = top.filter((raw) => Number(raw.reply_count ?? 0) > 0).slice(0, MAX_THREADS)
+  const threaded = top.filter((raw) => Number(raw.reply_count ?? 0) > 0).sort((a, b) => dateOf(b) - dateOf(a)).slice(0, MAX_THREADS)
   const threads = await Promise.all(
     threaded.map(async (raw) => ((await api.get(`/comment/${encodeURIComponent(String(raw.id))}/reply`, deadline)) as CommentList).comments ?? []),
   )
