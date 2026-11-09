@@ -153,15 +153,30 @@ async function applyStatus(api: ClickUp, task: string, status: string, deadline:
   }
 }
 
+async function readTaskListId(api: ClickUp, task: string, deadline: Deadline): Promise<string> {
+  const id = String(((await api.get(`/task/${task}`, deadline)) as { list?: { id?: number | string } }).list?.id ?? '')
+  if (id === '') throw new Error('Could not read the list of this task')
+  return id
+}
+
+const MAX_STATUS = 100
+
+export async function sourceStatus(api: ClickUp, input: { id: string; status: string }, deadline: Deadline): Promise<{ status: string }> {
+  const task = taskId(input.id)
+  const wanted = typeof input.status === 'string' ? input.status.trim() : ''
+  if (wanted === '' || wanted.length > MAX_STATUS) throw new Error('Give a status')
+  const canonical = await assertStatusExists(api, await readTaskListId(api, task, deadline), wanted, deadline)
+  await api.put(`/task/${task}`, { status: canonical }, deadline)
+  const after = ((await api.get(`/task/${task}`, deadline)) as { status?: { status?: string } }).status?.status ?? ''
+  if (after.trim().toLowerCase() !== canonical.toLowerCase()) throw new Error(`Status not confirmed: wanted ${canonical}, task shows ${after}`)
+  return { status: after }
+}
+
 async function postUpdate(api: ClickUp, task: string, input: Omit<UpdateInput, 'id'>, deadline: Deadline, now: number): Promise<PostResult> {
   if (input.lines.length === 0) throw new Error('Nothing to post')
   const mention = typeof input.mention === 'string' && input.mention.trim() !== '' ? input.mention : undefined
   const wantedStatus = typeof input.status === 'string' && input.status.trim() !== '' ? input.status : undefined
-  const readListId = async (): Promise<string> => {
-    const id = String(((await api.get(`/task/${task}`, deadline)) as { list?: { id?: number | string } }).list?.id ?? '')
-    if (id === '') throw new Error('Could not read the list of this task')
-    return id
-  }
+  const readListId = (): Promise<string> => readTaskListId(api, task, deadline)
   const status = wantedStatus === undefined ? undefined : await assertStatusExists(api, await readListId(), wantedStatus.trim(), deadline)
   const resolveUser = async (): Promise<string> => (/^\d+$/.test(mention!.trim()) ? mention!.trim() : resolveMention(api, await readListId(), mention!, deadline))
   const text = updateText(input.lines)

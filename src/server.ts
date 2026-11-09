@@ -9,7 +9,7 @@ import { treeChildren, type TreeNode } from './tree'
 import { parseClickUpLink } from './links'
 import { applyFilters, emptyGroup, matchesSearch, sanitizeGroup } from './filters'
 import type { ImageStore } from './reply-images'
-import { sourceItem, sourcePost, sourceReplies, type PostInput } from './source'
+import { sourceItem, sourcePost, sourceReplies, sourceStatus, type PostInput } from './source'
 
 const METHOD_TIMEOUT_MS = 25000
 const BOARD_ID_PATTERN = /^b-[0-9a-f]{8}$/
@@ -189,6 +189,9 @@ export function createMethods(deps: PluginDeps = {}) {
 
     'source.post': async (params: PostInput, ctx: ServerContext) =>
       withClickUp(ctx, (api, deadline) => sourcePost(api, params, deadline, clock.now())),
+
+    'source.status': async (params: { id: string; status: string }, ctx: ServerContext) =>
+      withClickUp(ctx, (api, deadline) => sourceStatus(api, params, deadline)),
 
     'source.replies': async (params: { id: string; sinceId: string | null }, ctx: ServerContext) =>
       withClickUp(ctx, (api, deadline) => sourceReplies(api, params, deadline, imageStoreOf(ctx))),

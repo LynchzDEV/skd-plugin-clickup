@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { createClickUp } from '../src/clickup-api'
 import { createDeadline } from '../src/deadline'
 import { REPLY_IMAGE_TTL_MS } from '../src/reply-images'
-import { ASK_HEADER, OWN_MARKER, askText, isTaskId, sourceItem, sourcePost, sourceReplies, updateText } from '../src/source'
+import { ASK_HEADER, OWN_MARKER, askText, isTaskId, sourceItem, sourcePost, sourceStatus, sourceReplies, updateText } from '../src/source'
 import { drain, fakeClock, settle, type FakeClock } from './helpers/fake-clock'
 import { fakeClickUp, type Responder } from './helpers/fake-clickup'
 import { fakeImages, type ImageReply } from './helpers/fake-images'
@@ -708,5 +708,57 @@ describe('sourceReplies prunes old reply images', () => {
     await settleWithDisk(clock, sourceReplies(api, { id: 't1', sinceId: null }, deadline, store))
     expect(existsSync(join(data, 'replies'))).toBe(false)
     expect(logs).toEqual([])
+  })
+})
+
+describe('sourceStatus', () => {
+  function statusSetup(plan: { statuses?: string[]; after?: string } = {}) {
+    const base = setup(({ path, method }) => {
+      if (method === 'GET' && path === '/task/t1') return { body: { id: 't1', list: { id: 'L1' }, status: { status: plan.after ?? 'In Progress' } } }
+      if (method === 'GET' && path === '/list/L1') return { body: { statuses: (plan.statuses ?? ['to do', 'In Progress']).map((status) => ({ status })) } }
+      if (method === 'PUT' && path === '/task/t1') return { body: {} }
+      return { status: 404, body: {} }
+    })
+    const run = (input: { id: string; status: string }) => settle(base.clock, sourceStatus(base.api, input, base.deadline))
+    const puts = () => base.fake.calls.filter((call) => call.method === 'PUT')
+    return { ...base, run, puts }
+  }
+
+  test('sends one PUT with only the canonical status and no comment', async () => {
+    const { run, fake, puts } = statusSetup()
+    expect(await run({ id: 't1', status: 'In Progress' })).toEqual({ status: 'In Progress' })
+    expect(puts()).toHaveLength(1)
+    expect(puts()[0]!.body).toEqual({ status: 'In Progress' })
+    expect(fake.calls.some((call) => call.path.includes('/comment'))).toBe(false)
+  })
+
+  test('matches case-insensitively and sends the list name', async () => {
+    const { run, puts } = statusSetup()
+    expect(await run({ id: 't1', status: '  in progress ' })).toEqual({ status: 'In Progress' })
+    expect(puts()[0]!.body).toEqual({ status: 'In Progress' })
+  })
+
+  test('an unknown status throws and sends no PUT', async () => {
+    const { run, puts } = statusSetup()
+    await expect(run({ id: 't1', status: 'Shipped' })).rejects.toThrow('This list has no status "Shipped"')
+    expect(puts()).toHaveLength(0)
+  })
+
+  test('a read-back that differs throws', async () => {
+    const { run } = statusSetup({ after: 'to do' })
+    await expect(run({ id: 't1', status: 'In Progress' })).rejects.toThrow('Status not confirmed: wanted In Progress, task shows to do')
+  })
+
+  test('a read-back differing only by case and spaces is confirmed', async () => {
+    const { run } = statusSetup({ after: ' in progress ' })
+    expect(await run({ id: 't1', status: 'In Progress' })).toEqual({ status: ' in progress ' })
+  })
+
+  test('a bad id or blank status is refused without calling ClickUp', async () => {
+    const { run, fake } = statusSetup()
+    await expect(run({ id: 'a/b', status: 'To do' })).rejects.toThrow('Not a ClickUp task id')
+    await expect(run({ id: 't1', status: '  ' })).rejects.toThrow('Give a status')
+    await expect(run({ id: 't1', status: 'x'.repeat(101) })).rejects.toThrow('Give a status')
+    expect(fake.calls).toHaveLength(0)
   })
 })

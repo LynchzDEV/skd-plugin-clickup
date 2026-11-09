@@ -469,6 +469,26 @@ describe('source methods', () => {
     expect(await call(clock, methods['source.post']({ id: 't1', kind: 'update', lines: ['Done.'] }, ctx))).toEqual({ commentId: '1700' })
   })
 
+  test('source.status sets only the status on ClickUp', async () => {
+    const { methods, ctx, clock, fake } = tokened(({ path, method }) => {
+      if (method === 'GET' && path === '/task/t1') return { body: { id: 't1', list: { id: 'L1' }, status: { status: 'Done' } } }
+      if (method === 'GET' && path === '/list/L1') return { body: { statuses: [{ status: 'Done' }] } }
+      return method === 'PUT' && path === '/task/t1' ? { body: {} } : { status: 404, body: {} }
+    })
+    expect(await call(clock, methods['source.status']({ id: 't1', status: 'done' }, ctx))).toEqual({ status: 'Done' })
+    expect(fake.calls.filter((c) => c.method === 'PUT').map((c) => c.body)).toEqual([{ status: 'Done' }])
+    expect(fake.calls.some((c) => c.path.includes('/comment'))).toBe(false)
+  })
+
+  test('source.status needs a token and rejects bad input before calling ClickUp', async () => {
+    const { methods, ctx, fake } = tokened(() => ({ body: {} }))
+    await expect(methods['source.status']({ id: 't1', status: '' }, ctx)).rejects.toThrow('Give a status')
+    await expect(methods['source.status']({ id: 'a/b', status: 'Done' }, ctx)).rejects.toThrow('Not a ClickUp task id')
+    expect(fake.calls).toHaveLength(0)
+    const { ctx: bare } = makeCtx({})
+    await expect(methods['source.status']({ id: 't1', status: 'Done' }, bare)).rejects.toThrow('Connect ClickUp first')
+  })
+
   test('source.item and source.replies go through to ClickUp', async () => {
     const { methods, ctx, clock } = tokened(({ path }) => {
       if (path === '/task/t1') return { body: { id: 't1', name: 'Login copy' } }
